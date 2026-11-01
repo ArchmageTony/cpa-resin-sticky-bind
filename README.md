@@ -5,30 +5,40 @@ CLIProxyAPI 原生插件: 为每份凭证绑定稳定的 Resin sticky 代理 Acc
 | 项 | 值 |
 |----|----|
 | 插件 ID | `cpa-resin-sticky-bind` |
-| 版本 | `0.2.0` |
+| 版本 | `0.2.1` |
 | 协议 | MIT |
 
 ## 行为
 
 1. 启动后与固定间隔枚举 CPA 凭证 (`host.auth.list`)
-2. 为每份可持久化凭证解析目标代理并写入 `proxy_url`:
+2. 按凭证类型解析目标代理并写入凭证级 `proxy_url`:
 
 ```text
 socks5h://<Platform>.<Account>:<token>@resin:2260
 ```
 
-3. 代理来源按优先级: `proxy_by_type[类型]` → `other_proxy_url` → 旧链路 (`resin_proxy_url` + 平台解析)
+3. 代理来源按优先级: `proxy_by_type[类型]` → `other_proxy_url`（全局兜底）→ 弃用的旧链路（仅为兼容 v0.1 配置保留）
 4. 默认 `rebind_on_change=false`: 已绑定凭证保持不动; 在页面勾选或配置开启后, 目标代理变化时自动重写 (Account 不变)
 5. 日志与页面中 token 始终脱敏
 
 ## 按凭证类型配置代理
 
-在插件管理页面 (管理中心 → Resin Sticky Bind) 直接编辑:
+在插件管理页面 (管理中心 → Resin Sticky Bind) 直接编辑, 每个类型一行完整代理地址, **不同类型可自由混用 Resin 与普通供应商代理**:
 
-- 每个类型一行, 填完整代理 URL; 另有 `other` 行作为未单独配置类型的兜底
-- Resin 粘性写法: `socks5h://平台名:token@resin:2260`, 用户名不含点时自动按凭证展开 `平台名.账号`
-- 用户名已含点 (`平台.账号`) 则视为完整身份, 该类型所有凭证共用同一出口
-- 普通代理填 `http://user:pass@host:port` 并取消勾选该行"粘性"
+- **粘性代理**: 地址中包含 `{account}` 占位符即为账号级粘性, 占位符按 Account 策略逐凭证替换:
+
+  ```text
+  socks5h://US.{account}:<token>@resin:2260
+  → socks5h://US.<账号>:<token>@resin:2260   (每份凭证独立出口)
+  ```
+
+- **非粘性**: 不含 `{account}` 的地址整类凭证共用, 原样直连:
+
+  ```text
+  http://<user>:<pass>@<proxy-host>:<port>
+  ```
+
+- `other` 行是未单独配置类型的全局兜底, 同样支持 `{account}`
 - 类型清单 = 内置 CPA 支持类型 ∪ 运行时发现的类型 ∪ `other`
 - 浅色 / 深色主题: 跟随系统, 页面右上角可手动切换
 - 保存走 CPA 管理 API, 自动复用管理面板已登录的密钥 (否则提示输入一次, 仅存于浏览器 sessionStorage)
@@ -39,15 +49,11 @@ socks5h://<Platform>.<Account>:<token>@resin:2260
 cpa-resin-sticky-bind:
   enabled: true
   proxy_by_type:
-    codex: "socks5h://<platform-a>:<token>@resin:2260"
+    codex: "socks5h://<platform>.{account}:<token>@resin:2260"
     antigravity: "http://<user>:<pass>@<proxy-host>:<port>"
-  sticky_by_type:
-    codex: true
-    antigravity: false
-    other: true
-  other_proxy_url: "socks5h://<platform-b>:<token>@resin:2260"
-  expand_sticky_account: true
-  rebind_on_change: false  # 改代理后需自动重写已绑定凭证时改为 true
+  other_proxy_url: "socks5h://<platform>.{account}:<token>@resin:2260"
+  account_strategy: "auth_id"
+  rebind_on_change: false
 ```
 
 ## 安装 (CPA 插件商店)
@@ -90,19 +96,15 @@ plugins/linux/amd64/cpa-resin-sticky-bind.so
 
 | 字段 | 说明 |
 |------|------|
-| `resin_proxy_url` | 旧链路全局代理入口, 内网示例 `socks5h://resin:2260` |
-| `proxy_token_env` | URL 无 password 时读取的环境变量名 |
-| `proxy_by_type` | 按凭证类型的完整代理 URL (管理页面写入) |
-| `sticky_by_type` | 按类型的粘性展开开关, key `other` 对应兜底行, 缺省 true |
-| `other_proxy_url` | 未单独配置类型的兜底代理 |
-| `expand_sticky_account` | 未列入 `sticky_by_type` 的类型默认粘性展开 |
+| `proxy_by_type` | 按凭证类型的代理地址 (管理页面写入); 含 `{account}` = 粘性, 不含 = 整类共用 |
+| `other_proxy_url` | 未单独配置类型的全局兜底, 同样支持 `{account}` |
 | `rebind_on_change` | 目标代理变化时自动重写已绑定凭证 (默认 false, 需显式开启) |
-| `default_platform` | 旧链路默认 Platform |
-| `platform_by_provider` | 旧链路按 provider 覆盖 Platform |
-| `platform_by_auth_id` | 旧链路按 auth id 覆盖 Platform (最高优先级) |
-| `account_strategy` | `auth_id` / `email` / `sub` / `filename` |
-| `only_if_empty` | 仅空 `proxy_url` 写入 (关闭 `rebind_on_change` 时生效) |
-| `overwrite_existing` | 是否允许覆盖已有 `proxy_url` |
+| `account_strategy` | `auth_id` / `email` / `sub` / `filename`, 决定 `{account}` 的取值 |
+| `account_prefix` | 可选的 Account 前缀 |
+| `sync_interval_seconds` | 凭证对账间隔 |
+| `only_if_empty` / `overwrite_existing` | 旧开关, 关闭 `rebind_on_change` 时生效 |
+| `include_providers` / `exclude_providers` | 类型过滤 |
+| `resin_proxy_url` / `default_platform` / `platform_by_provider` / `platform_by_auth_id` / `proxy_token_env` | **弃用**: v0.1 旧链路, 仅在 other 为空时兜底, 仅为兼容保留 |
 
 不需要配置 CPA Management 地址. 凭证读写走进程内 Host Callback.
 

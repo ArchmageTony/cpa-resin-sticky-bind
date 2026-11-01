@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"html"
-	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -18,16 +16,6 @@ import (
 // authenticated against the CPA management API from JS.
 func renderStatusPage(cfg stickybind.Config, syncNote string, counts map[string]int) string {
 	cfg = cfg.Normalize()
-	tokenStatus := "已就绪"
-	if _, err := stickybind.ParseResinProxyURL(cfg.ResinProxyURL, cfg.ProxyTokenEnv, os.Getenv); err != nil {
-		tokenStatus = "异常: " + err.Error()
-	}
-	safeURL := stickybind.RedactProxyURL(cfg.ResinProxyURL)
-	if u, err := url.Parse(cfg.ResinProxyURL); err == nil && u.User != nil {
-		if _, hasPass := u.User.Password(); !hasPass && u.User.Username() != "" {
-			safeURL = u.Scheme + "://***@" + u.Host
-		}
-	}
 
 	var b strings.Builder
 	b.WriteString("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
@@ -45,32 +33,36 @@ func renderStatusPage(cfg stickybind.Config, syncNote string, counts map[string]
 		b.WriteString("<div class=\"note\">" + html.EscapeString(syncNote) + "</div>")
 	}
 
-	// ---- status ----
-	b.WriteString("<h2>运行状态</h2><table class=\"kv\">")
+	// ---- status info (read-only) ----
+	b.WriteString("<h2>状态信息</h2><table class=\"kv\">")
 	kvRow(&b, "插件", pluginID)
-	kvRow(&b, "总开关", boolZH(cfg.Enabled))
-	kvRow(&b, "全局代理入口", safeURL)
-	kvRow(&b, "Token 来源", html.EscapeString(cfg.ProxyTokenEnv)+" 环境变量: "+tokenStatus)
-	kvRow(&b, "Account 策略", html.EscapeString(cfg.AccountStrategy))
-	kvRow(&b, "同步间隔", fmt.Sprintf("%d 秒", cfg.SyncIntervalSeconds))
-	kvRow(&b, "改代理自动跟随", boolZH(cfg.RebindOnChange))
 	kvRow(&b, "检查时间", time.Now().Format("2006-01-02 15:04:05"))
+	b.WriteString("</table>")
+
+	// ---- general settings (editable) ----
+	b.WriteString("<h2>基本设置</h2><table class=\"kv\">")
+	b.WriteString("<tr><th>总开关</th><td><label class=\"inline\"><input type=\"checkbox\" id=\"optEnabled\"" + checked(cfg.Enabled) + "> 启用插件（关闭后停止自动同步，已有绑定保持不变）</label></td></tr>")
+	b.WriteString("<tr><th>Account 策略</th><td>" + strategySelect(cfg.AccountStrategy) + "</td></tr>")
+	b.WriteString("<tr><th>同步间隔</th><td class=\"stack\"><input id=\"inpInterval\" type=\"number\" min=\"5\" step=\"1\" value=\"" + fmt.Sprintf("%d", cfg.SyncIntervalSeconds) + "\" class=\"num\"> 秒</td></tr>")
+	b.WriteString("<tr><th>改代理自动跟随</th><td><label class=\"inline\"><input type=\"checkbox\" id=\"optRebind\"" + checked(cfg.RebindOnChange) + "> 目标代理变化时自动重写该类型已绑定凭证（rebind_on_change）</label></td></tr>")
 	b.WriteString("</table>")
 
 	// ---- per-type form ----
 	b.WriteString("<h2>按凭证类型配置代理</h2>")
-	b.WriteString("<p class=\"hint\">每行填写一个完整代理地址。Resin 粘性写法: <code>socks5h://平台名:令牌@resin:2260</code>（用户名不含点时自动按凭证补全为 <code>平台名.账号</code>）；用户名已含点则视为完整身份，整类凭证共用。普通代理直接填 <code>http://用户:密码@主机:端口</code> 并取消勾选“粘性”。“other” 是未单独配置类型的兜底入口。</p>")
+	b.WriteString("<div class=\"guide\">")
+	b.WriteString("<div class=\"guide-title\">写法说明</div><ul>")
+	b.WriteString("<li><b>粘性代理（每份凭证独立出口）</b>：地址里写 <code>{account}</code>，保存后按上方 Account 策略逐凭证替换。<br>例：<code>socks5h://US.{account}:令牌@resin:2260</code> → 各凭证得到 <code>US.账号A</code>、<code>US.账号B</code>…</li>")
+	b.WriteString("<li><b>共用代理（整类一个出口）</b>：地址不含 <code>{account}</code>，原样直连。<br>例：<code>http://用户:密码@供应商主机:端口</code></li>")
+	b.WriteString("<li>不同类型可自由混用：某些类型走 Resin 粘性，某些类型走普通供应商代理。</li>")
+	b.WriteString("<li><code>{account}</code> 的取值由上方“Account 策略”决定（auth_id / email / sub / filename），同一凭证无论换什么代理都得到相同账号。</li>")
+	b.WriteString("<li>带 <b>兜底</b> 徽标的 other 行 = 全局默认：未单独配置的类型都走它；留空则回退到弃用的旧链路。</li>")
+	b.WriteString("</ul></div>")
 	b.WriteString("<table class=\"types\" id=\"typeTable\"><thead><tr>")
-	b.WriteString("<th>凭证类型</th><th>代理地址</th><th>当前配置</th><th>粘性</th><th>凭证数</th></tr></thead><tbody>")
+	b.WriteString("<th>凭证类型</th><th>代理地址</th><th>当前配置</th><th>凭证数</th></tr></thead><tbody>")
 	for _, row := range pageRows(cfg, counts) {
 		renderTypeRow(&b, row)
 	}
 	b.WriteString("</tbody></table>")
-
-	b.WriteString("<div class=\"opts\">")
-	b.WriteString("<label><input type=\"checkbox\" id=\"optRebind\"" + checked(cfg.RebindOnChange) + "> 改动代理后自动重写已绑定凭证（rebind_on_change）</label>")
-	b.WriteString("<label><input type=\"checkbox\" id=\"optExpand\"" + checked(cfg.ExpandStickyAccount) + "> 新出现的类型默认启用粘性展开（expand_sticky_account）</label>")
-	b.WriteString("</div>")
 
 	b.WriteString("<div class=\"actions\">")
 	b.WriteString("<button id=\"saveBtn\" type=\"button\" class=\"primary\">保存配置</button>")
@@ -92,7 +84,7 @@ func renderStatusPage(cfg stickybind.Config, syncNote string, counts map[string]
 	b.WriteString("<li>保存后 CPA 会自动重载插件配置，随后按同步间隔自动写入各凭证的 <code>proxy_url</code>，也可点“立即同步”。</li>")
 	b.WriteString("<li>本页面展示的代理地址始终脱敏（令牌显示为 ***）。</li>")
 	b.WriteString("<li>类型清单 = 内置 CPA 支持类型 ∪ 运行时发现的类型；带“发现”标记的是运行时新出现的类型。</li>")
-	b.WriteString("<li>未单独配置的类型使用 “other” 行的代理；other 也为空时回退到全局 <code>resin_proxy_url</code> + 平台解析。</li>")
+	b.WriteString("<li>未单独配置的类型使用 “other” 行的代理；other 也为空时回退到弃用的旧链路（<code>resin_proxy_url</code> + 平台解析，仅为兼容旧配置保留）。</li>")
 	b.WriteString("</ul>")
 	b.WriteString("</div>")
 	b.WriteString(pageJS())
@@ -102,13 +94,12 @@ func renderStatusPage(cfg stickybind.Config, syncNote string, counts map[string]
 
 // typeRow is one rendered row of the per-type table.
 type typeRow struct {
-	Provider string // config key; "other" for the fallback row
-	Label    string
-	Current  string // redacted current proxy or ""
-	Sticky   bool
-	Count    int
+	Provider   string // config key; "other" for the fallback row
+	Label      string
+	Current    string // redacted current proxy or ""
+	Count      int
 	Discovered bool // seen at runtime but not in the built-in list
-	IsOther  bool
+	IsOther    bool
 }
 
 func pageRows(cfg stickybind.Config, counts map[string]int) []typeRow {
@@ -120,12 +111,10 @@ func pageRows(cfg stickybind.Config, counts map[string]int) []typeRow {
 			return
 		}
 		seen[provider] = true
-		current := cfg.TypeProxyURL(provider)
 		rows = append(rows, typeRow{
 			Provider:   provider,
 			Label:      provider,
-			Current:    stickybind.RedactTypedProxyURL(current),
-			Sticky:     cfg.StickyForType(provider),
+			Current:    stickybind.RedactTypedProxyURL(cfg.TypeProxyURL(provider)),
 			Count:      counts[provider],
 			Discovered: discovered,
 		})
@@ -143,18 +132,11 @@ func pageRows(cfg stickybind.Config, counts map[string]int) []typeRow {
 	for _, p := range extra {
 		add(p, true)
 	}
-	// other row last: dedicated other_proxy_url, sticky flag under "other" key
-	otherSticky := true
-	if v, ok := cfg.StickyByType[stickybind.OtherProviderKey]; ok {
-		otherSticky = stickybind.BoolFromAny(v, true)
-	} else {
-		otherSticky = cfg.ExpandStickyAccount
-	}
+	// other row last: dedicated other_proxy_url as the global fallback
 	rows = append(rows, typeRow{
 		Provider: stickybind.OtherProviderKey,
 		Label:    "other",
 		Current:  stickybind.RedactTypedProxyURL(cfg.OtherProxyURL),
-		Sticky:   otherSticky,
 		IsOther:  true,
 	})
 	return rows
@@ -178,7 +160,6 @@ func renderTypeRow(b *strings.Builder, row typeRow) {
 		b.WriteString("<code>" + html.EscapeString(row.Current) + "</code>")
 	}
 	b.WriteString("</td>")
-	b.WriteString("<td><input class=\"sticky\" type=\"checkbox\"" + checked(row.Sticky) + "></td>")
 	if row.Count > 0 {
 		b.WriteString(fmt.Sprintf("<td>%d 份</td>", row.Count))
 	} else {
@@ -206,13 +187,19 @@ td.ty{font-weight:600;white-space:nowrap}
 .badge{display:inline-block;font-size:11px;padding:0 6px;border-radius:8px;background:var(--code-bg);color:var(--muted)}
 .badge.discover{background:var(--note-bg);color:var(--accent)}
 .muted{color:var(--muted)}
-input[type=text]{width:100%;min-width:220px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:ui-monospace,monospace;font-size:12.5px}
-input[type=text]:focus{outline:2px solid var(--accent);outline-offset:-1px}
+input[type=text],input[type=number],select{width:100%;max-width:420px;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:ui-monospace,monospace;font-size:12.5px}
+input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
 input[type=checkbox]{accent-color:var(--accent)}
+label.inline{display:flex;align-items:center;gap:8px}
+td.stack{display:flex;flex-direction:column;gap:6px}
+td.stack .hint{font-size:12px}
+table.kv th{width:150px}
 .note{margin:12px 0;padding:10px 12px;background:var(--note-bg);border-radius:8px}
 .hidden{display:none}
-.opts{margin:14px 0;display:flex;flex-direction:column;gap:6px}
-.opts label,.keyrow{display:flex;align-items:center;gap:8px}
+.guide{margin:10px 0 14px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px}
+.guide ul{margin:6px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+.guide-title{font-weight:600;color:var(--accent)}
+.keyrow{display:flex;align-items:center;gap:8px}
 .actions{display:flex;gap:10px;margin:16px 0;flex-wrap:wrap}
 button,.btn{border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--fg);padding:7px 16px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
@@ -319,6 +306,10 @@ var configCache = null;
 function markDirty(input){
   input.dataset.dirty = "1";
 }
+["selStrategy","inpInterval"].forEach(function(id){
+  $(id).addEventListener("input", function(){ markDirty($(id)); });
+  $(id).addEventListener("change", function(){ markDirty($(id)); });
+});
 document.querySelectorAll("#typeTable tr[data-type]").forEach(function(tr){
   var input = tr.querySelector("input.px");
   input.addEventListener("input", function(){ markDirty(input); });
@@ -326,34 +317,39 @@ document.querySelectorAll("#typeTable tr[data-type]").forEach(function(tr){
 function fillForm(cfg){
   configCache = cfg || {};
   var byType = configCache.proxy_by_type || {};
-  var sticky = configCache.sticky_by_type || {};
   document.querySelectorAll("#typeTable tr[data-type]").forEach(function(tr){
     var t = tr.dataset.type;
     var input = tr.querySelector("input.px");
-    var stickyBox = tr.querySelector("input.sticky");
     var current = (t === "other") ? (configCache.other_proxy_url || "") : (byType[t] || "");
     if (current){
       input.value = current;
       input.dataset.origin = current;
     }
-    if (sticky.hasOwnProperty(t)) stickyBox.checked = !!sticky[t];
   });
   if (typeof configCache.rebind_on_change === "boolean") $("optRebind").checked = configCache.rebind_on_change;
-  if (typeof configCache.expand_sticky_account === "boolean") $("optExpand").checked = configCache.expand_sticky_account;
+  if (typeof configCache.enabled === "boolean") $("optEnabled").checked = configCache.enabled;
+  var st = $("selStrategy");
+  if (configCache.account_strategy){
+    st.value = configCache.account_strategy;
+    st.dataset.origin = configCache.account_strategy;
+  }
+  var iv = $("inpInterval");
+  if (configCache.sync_interval_seconds){
+    iv.value = String(configCache.sync_interval_seconds);
+    iv.dataset.origin = String(configCache.sync_interval_seconds);
+  }
 }
 ensureKey().then(function(k){ activeKey = k; return apiGet(k); }).then(fillForm).catch(function(){ /* user can still retry on save */ });
 
 /* ---------- save ---------- */
 $("saveBtn").addEventListener("click", function(){
   var btn = this;
-  var body = {proxy_by_type: {}, sticky_by_type: {}, other_proxy_url: null};
+  var body = {proxy_by_type: {}};
   var typed = body.proxy_by_type;
-  var sticky = body.sticky_by_type;
   var prevTyped = (configCache && configCache.proxy_by_type) || {};
-  var prevSticky = (configCache && configCache.sticky_by_type) || {};
   // keep untouched rows so PATCH of the whole map does not drop them
   Object.keys(prevTyped).forEach(function(k){ typed[k] = prevTyped[k]; });
-  Object.keys(prevSticky).forEach(function(k){ sticky[k] = prevSticky[k]; });
+  body.other_proxy_url = (configCache && configCache.other_proxy_url) || null;
   var changed = false;
   document.querySelectorAll("#typeTable tr[data-type]").forEach(function(tr){
     var t = tr.dataset.type;
@@ -364,19 +360,22 @@ $("saveBtn").addEventListener("click", function(){
       if (t === "other") body.other_proxy_url = val; else typed[t] = val;
       changed = true;
     } else if (!val && origin && input.dataset.dirty){
-      // cleared on purpose
+      // cleared on purpose; PATCH treats null as key removal
       if (t === "other") body.other_proxy_url = null; else delete typed[t];
       changed = true;
     }
-    var flag = tr.querySelector("input.sticky").checked;
-    if (t === "other"){
-      if ((prevSticky.other ? !!prevSticky.other : true) !== flag){ sticky.other = flag; changed = true; }
-    } else if (prevTyped[t] || val){
-      if ((prevSticky.hasOwnProperty(t) ? !!prevSticky[t] : true) !== flag){ sticky[t] = flag; changed = true; }
-    }
   });
+  if (body.other_proxy_url === null && !(configCache && configCache.other_proxy_url)) delete body.other_proxy_url;
   if (($("optRebind").checked) !== ((configCache && typeof configCache.rebind_on_change === "boolean") ? configCache.rebind_on_change : false)){ body.rebind_on_change = $("optRebind").checked; changed = true; }
-  if (($("optExpand").checked) !== ((configCache && typeof configCache.expand_sticky_account === "boolean") ? configCache.expand_sticky_account : true)){ body.expand_sticky_account = $("optExpand").checked; changed = true; }
+  if (($("optEnabled").checked) !== ((configCache && typeof configCache.enabled === "boolean") ? configCache.enabled : true)){ body.enabled = $("optEnabled").checked; changed = true; }
+  var st = $("selStrategy"), sv = st.value, so = st.dataset.origin || "";
+  if (sv !== so){ body.account_strategy = sv; changed = true; }
+  var ivRaw = $("inpInterval").value.trim();
+  if (ivRaw !== ($("inpInterval").dataset.origin || "")){
+    var iv = parseInt(ivRaw, 10);
+    if (!iv || iv < 5){ showMsg("同步间隔需为不小于 5 的整数秒", true); return; }
+    body.sync_interval_seconds = iv; changed = true;
+  }
   if (!changed){ showMsg("没有需要保存的改动"); return; }
   // drop null other_proxy_url when it was already absent
   if (body.other_proxy_url === null && !(configCache && configCache.other_proxy_url)) delete body.other_proxy_url;
@@ -413,15 +412,30 @@ function doSave(body){
 </script>`
 }
 
-func kvRow(b *strings.Builder, k, v string) {
-	b.WriteString("<tr><th>" + html.EscapeString(k) + "</th><td>" + v + "</td></tr>")
+// strategySelect renders the account strategy dropdown with the current
+// value selected; unknown persisted values appear as an extra option.
+func strategySelect(current string) string {
+	known := []string{"auth_id", "email", "sub", "filename"}
+	var b strings.Builder
+	b.WriteString("<select id=\"selStrategy\">")
+	found := false
+	for _, s := range known {
+		sel := ""
+		if s == current {
+			sel = " selected"
+			found = true
+		}
+		b.WriteString("<option value=\"" + s + "\"" + sel + ">" + s + "</option>")
+	}
+	if !found && current != "" {
+		b.WriteString("<option value=\"" + html.EscapeString(current) + "\" selected>" + html.EscapeString(current) + "</option>")
+	}
+	b.WriteString("</select>")
+	return b.String()
 }
 
-func boolZH(v bool) string {
-	if v {
-		return "开启"
-	}
-	return "关闭"
+func kvRow(b *strings.Builder, k, v string) {
+	b.WriteString("<tr><th>" + html.EscapeString(k) + "</th><td>" + v + "</td></tr>")
 }
 
 func checked(v bool) string {

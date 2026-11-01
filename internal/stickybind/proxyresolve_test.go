@@ -10,42 +10,29 @@ func getenvMap(vals map[string]string) func(string) string {
 	return func(k string) string { return vals[k] }
 }
 
-func TestDefaultsEnableRebindAndExpand(t *testing.T) {
+func TestDefaultsKeepRebindOffAndMaps(t *testing.T) {
 	cfg := Defaults().Normalize()
 	if cfg.RebindOnChange {
 		t.Fatal("rebind_on_change should default to false")
 	}
-	if !cfg.ExpandStickyAccount {
-		t.Fatal("expand_sticky_account should default to true")
-	}
-	if cfg.ProxyByType == nil || cfg.StickyByType == nil {
-		t.Fatal("new maps should be non-nil after Normalize")
+	if cfg.ProxyByType == nil {
+		t.Fatal("proxy_by_type should be non-nil after Normalize")
 	}
 }
 
 func TestParseConfigNewFields(t *testing.T) {
 	req, _ := json.Marshal(map[string]any{
 		"config_yaml": "enabled: true\n" +
-			"proxy_by_type:\n  codex: socks5h://pool-a:tok1@resin:2260\n  ANTIGRAVITY: http://u:p@proxy.example:8080\n" +
-			"sticky_by_type:\n  antigravity: false\n  other: true\n" +
+			"proxy_by_type:\n  codex: socks5h://pool-a.{account}:tok1@resin:2260\n  ANTIGRAVITY: http://u:p@proxy.example:8080\n" +
 			"other_proxy_url: socks5h://pool-b:tok2@resin:2260\n" +
-			"expand_sticky_account: true\nrebind_on_change: false\n",
+			"rebind_on_change: false\n",
 	})
 	cfg := ParseConfigFromRequest(req).Normalize()
-	if got := cfg.TypeProxyURL("codex"); got != "socks5h://pool-a:tok1@resin:2260" {
+	if got := cfg.TypeProxyURL("codex"); got != "socks5h://pool-a.{account}:tok1@resin:2260" {
 		t.Fatalf("proxy_by_type[codex] = %q", got)
 	}
 	if got := cfg.TypeProxyURL("antigravity"); got != "http://u:p@proxy.example:8080" {
 		t.Fatalf("case-insensitive type lookup failed: %q", got)
-	}
-	if cfg.StickyForType("antigravity") {
-		t.Fatal("sticky_by_type antigravity=false should disable sticky")
-	}
-	if !cfg.StickyForType("codex") {
-		t.Fatal("sticky_by_type missing codex should default true")
-	}
-	if !cfg.StickyForType(OtherProviderKey) {
-		t.Fatal("sticky_by_type other=true should be honoured")
 	}
 	if cfg.OtherProxyURL != "socks5h://pool-b:tok2@resin:2260" {
 		t.Fatalf("other_proxy_url = %q", cfg.OtherProxyURL)
@@ -78,87 +65,69 @@ func TestResolveProxyInputPriority(t *testing.T) {
 	}
 }
 
-func TestParseTypedProxyURLKeepsIdentity(t *testing.T) {
-	proxy, err := ParseTypedProxyURL("socks5h://pool-a:tok1@resin:2260", "RESIN_PROXY_TOKEN", func(string) string { return "" })
+func TestNormalizeProxyEntryAccountBound(t *testing.T) {
+	entry, bound, err := NormalizeProxyEntry("socks5h://pool-a.{account}:tok1@resin:2260")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proxy.Username != "pool-a" || proxy.Password != "tok1" {
-		t.Fatalf("proxy = %#v", proxy)
+	if !bound {
+		t.Fatal("entry with {account} should be account-bound")
+	}
+	if entry != "socks5h://pool-a.{account}:tok1@resin:2260" {
+		t.Fatalf("entry text must be preserved verbatim: %q", entry)
 	}
 }
 
-func TestParseTypedProxyURLTokenAsUsername(t *testing.T) {
-	proxy, err := ParseTypedProxyURL("socks5h://onlytoken@resin:2260", "RESIN_PROXY_TOKEN", func(string) string { return "" })
+func TestNormalizeProxyEntryVerbatim(t *testing.T) {
+	entry, bound, err := NormalizeProxyEntry(" http://alice:s3cret@proxy.example:8080 ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proxy.Username != "" || proxy.Password != "onlytoken" {
-		t.Fatalf("username-only form should mean token: %#v", proxy)
+	if bound {
+		t.Fatal("entry without {account} must not be account-bound")
+	}
+	if entry != "http://alice:s3cret@proxy.example:8080" {
+		t.Fatalf("entry = %q", entry)
 	}
 }
 
-func TestParseTypedProxyURLEnvFallback(t *testing.T) {
-	proxy, err := ParseTypedProxyURL("socks5h://resin:2260", "RESIN_PROXY_TOKEN", getenvMap(map[string]string{"RESIN_PROXY_TOKEN": "envtok"}))
+func TestNormalizeProxyEntryPlaceholderAnywhere(t *testing.T) {
+	// the only convention adopted is containment; no position or count limits
+	entry, bound, err := NormalizeProxyEntry("socks5h://{account}:{account}@resin:2260")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proxy.Username != "" || proxy.Password != "envtok" {
-		t.Fatalf("proxy = %#v", proxy)
+	if !bound {
+		t.Fatal("multiple placeholders should still be account-bound")
 	}
-	if _, err := ParseTypedProxyURL("socks5h://resin:2260", "RESIN_PROXY_TOKEN", func(string) string { return "" }); err == nil {
-		t.Fatal("missing token should error")
-	}
-}
-
-func TestBuildTypedProxyURLExpand(t *testing.T) {
-	proxy := ParsedProxy{Scheme: "socks5h", Host: "resin", Port: "2260", Username: "pool-a", Password: "tok1"}
-	got, err := BuildTypedProxyURL(proxy, "acc1", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "socks5h://pool-a.acc1:tok1@resin:2260" {
-		t.Fatalf("url = %q", got)
+	if entry != "socks5h://{account}:{account}@resin:2260" {
+		t.Fatalf("entry = %q", entry)
 	}
 }
 
-func TestBuildTypedProxyURLDottedIdentityKept(t *testing.T) {
-	proxy := ParsedProxy{Scheme: "socks5h", Host: "resin", Port: "2260", Username: "pool-a.fixed", Password: "tok1"}
-	got, err := BuildTypedProxyURL(proxy, "acc1", true)
-	if err != nil {
-		t.Fatal(err)
+func TestNormalizeProxyEntryRejectsGarbage(t *testing.T) {
+	cases := []string{
+		"",
+		"   ",
+		"not a url",
+		"ftp://host:2260",
+		"socks5h://:2260", // missing host
 	}
-	if got != "socks5h://pool-a.fixed:tok1@resin:2260" {
-		t.Fatalf("dotted identity should stay: %q", got)
-	}
-}
-
-func TestBuildTypedProxyURLNoExpandPlainProxy(t *testing.T) {
-	proxy := ParsedProxy{Scheme: "http", Host: "proxy.example", Port: "8080", Username: "alice", Password: "s3cret"}
-	got, err := BuildTypedProxyURL(proxy, "acc1", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "http://alice:s3cret@proxy.example:8080" {
-		t.Fatalf("plain proxy should keep credentials: %q", got)
+	for _, c := range cases {
+		if _, _, err := NormalizeProxyEntry(c); err == nil {
+			t.Fatalf("NormalizeProxyEntry(%q) should fail", c)
+		}
 	}
 }
 
-func TestBuildTypedProxyURLNoIdentityTokenOnly(t *testing.T) {
-	proxy := ParsedProxy{Scheme: "socks5h", Host: "resin", Port: "2260", Password: "tok1"}
-	got, err := BuildTypedProxyURL(proxy, "acc1", true)
-	if err != nil {
-		t.Fatal(err)
+func TestRenderProxyEntrySubstitutesAll(t *testing.T) {
+	got := RenderProxyEntry("socks5h://pool-a.{account}:tok@resin:2260", "acc1")
+	if got != "socks5h://pool-a.acc1:tok@resin:2260" {
+		t.Fatalf("rendered = %q", got)
 	}
-	if got != "socks5h://tok1@resin:2260" {
-		t.Fatalf("url = %q", got)
-	}
-}
-
-func TestBuildTypedProxyURLStickyRequiresAccount(t *testing.T) {
-	proxy := ParsedProxy{Scheme: "socks5h", Host: "resin", Port: "2260", Username: "pool-a", Password: "tok1"}
-	if _, err := BuildTypedProxyURL(proxy, " ", true); err == nil {
-		t.Fatal("dotless identity with expand and no account should error")
+	// verbatim entries pass through untouched
+	if got := RenderProxyEntry("http://alice:s3cret@proxy.example:8080", "acc1"); got != "http://alice:s3cret@proxy.example:8080" {
+		t.Fatalf("verbatim entry changed: %q", got)
 	}
 }
 
@@ -166,6 +135,8 @@ func TestRedactTypedProxyURL(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"socks5h://pool-a:tok1@resin:2260", "socks5h://pool-a:***@resin:2260"},
 		{"socks5h://onlytoken@resin:2260", "socks5h://***@resin:2260"},
+		// {account} is not URL-safe; the mask must survive it
+		{"socks5h://pool-a.{account}:tok1@resin:2260", "socks5h://pool-a.{account}:***@resin:2260"},
 		{"", ""},
 	}
 	for _, c := range cases {

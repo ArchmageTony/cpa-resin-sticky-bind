@@ -57,9 +57,7 @@ type Config struct {
 	IncludeProviders    []string          `json:"include_providers" yaml:"include_providers"`
 	ExcludeProviders    []string          `json:"exclude_providers" yaml:"exclude_providers"`
 	ProxyByType         map[string]string `json:"proxy_by_type" yaml:"proxy_by_type"`
-	StickyByType        map[string]string `json:"sticky_by_type" yaml:"sticky_by_type"`
 	OtherProxyURL       string            `json:"other_proxy_url" yaml:"other_proxy_url"`
-	ExpandStickyAccount bool              `json:"expand_sticky_account" yaml:"expand_sticky_account"`
 	RebindOnChange      bool              `json:"rebind_on_change" yaml:"rebind_on_change"`
 }
 
@@ -80,9 +78,7 @@ func Defaults() Config {
 		IncludeProviders:    nil,
 		ExcludeProviders:    nil,
 		ProxyByType:         map[string]string{},
-		StickyByType:        map[string]string{},
 		OtherProxyURL:       "",
-		ExpandStickyAccount: true,
 		RebindOnChange:      false,
 	}
 }
@@ -121,31 +117,8 @@ func (c Config) Normalize() Config {
 	out.PlatformByProvider = cleanStringMap(out.PlatformByProvider)
 	out.PlatformByAuthID = cleanStringMap(out.PlatformByAuthID)
 	out.ProxyByType = cleanStringMap(out.ProxyByType)
-	out.StickyByType = cleanStringMap(out.StickyByType)
 	out.OtherProxyURL = strings.TrimSpace(out.OtherProxyURL)
 	return out
-}
-
-// StickyForType reports whether a per-type proxy entry should expand its
-// dotless sticky identity with the per-credential account. Unlisted types
-// default to true because Resin sticky URLs are this plugin's primary form.
-// The "other" fallback row uses OtherProviderKey as its key.
-func (c Config) StickyForType(provider string) bool {
-	if len(c.StickyByType) > 0 {
-		key := strings.TrimSpace(provider)
-		if key != "" {
-			if v, ok := c.StickyByType[key]; ok {
-				return BoolFromAny(v, true)
-			}
-			lower := strings.ToLower(key)
-			for k, v := range c.StickyByType {
-				if strings.ToLower(strings.TrimSpace(k)) == lower {
-					return BoolFromAny(v, true)
-				}
-			}
-		}
-	}
-	return c.ExpandStickyAccount
 }
 
 // ParsedProxy is the resolved resin proxy endpoint without account identity.
@@ -158,9 +131,10 @@ type ParsedProxy struct {
 	RawURL   string
 }
 
-// ParseResinProxyURL parses resin_proxy_url and resolves password.
-// The URL username is ignored (treated as token when no password) so the
-// legacy path always rebuilds identity as Platform.Account itself.
+// ParseResinProxyURL parses resin_proxy_url and resolves the token by
+// precedence: URL password > URL username (legacy token-in-username form) >
+// tokenEnv. The URL username is never used as sticky identity on the legacy
+// path; identity is always rebuilt as Platform.Account.
 func ParseResinProxyURL(raw string, tokenEnv string, getenv func(string) string) (ParsedProxy, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -196,15 +170,15 @@ func ParseResinProxyURL(raw string, tokenEnv string, getenv func(string) string)
 	}
 	password := ""
 	if u.User != nil {
-		if p, ok := u.User.Password(); ok {
+		if p, ok := u.User.Password(); ok && strings.TrimSpace(p) != "" {
 			password = p
 		}
-		// Accept socks5h://<token>@host:port (token placed in username, no password).
+		// Legacy form: socks5h://<token>@host:port (token in username).
 		if strings.TrimSpace(password) == "" {
 			password = strings.TrimSpace(u.User.Username())
 		}
 	}
-	if strings.TrimSpace(password) == "" {
+	if password == "" {
 		envName := strings.TrimSpace(tokenEnv)
 		if envName == "" {
 			envName = DefaultProxyTokenEnv
@@ -215,7 +189,7 @@ func ParseResinProxyURL(raw string, tokenEnv string, getenv func(string) string)
 		password = strings.TrimSpace(getenv(envName))
 	}
 	if password == "" {
-		return ParsedProxy{}, fmt.Errorf("proxy token missing: set password in resin_proxy_url or env %s", strings.TrimSpace(tokenEnv))
+		return ParsedProxy{}, fmt.Errorf("proxy token missing: set password in resin_proxy_url, proxy_token, or env %s", strings.TrimSpace(tokenEnv))
 	}
 	return ParsedProxy{
 		Scheme:   scheme,
@@ -224,110 +198,6 @@ func ParseResinProxyURL(raw string, tokenEnv string, getenv func(string) string)
 		Password: password,
 		RawURL:   raw,
 	}, nil
-}
-
-// ParseTypedProxyURL parses one proxy_by_type / other_proxy_url entry and
-// resolves its token. Unlike ParseResinProxyURL the URL username is preserved
-// as the sticky identity: "socks5h://US:<token>@host" keeps Username "US",
-// while the username-only form "socks5h://<token>@host" still means token.
-func ParseTypedProxyURL(raw string, tokenEnv string, getenv func(string) string) (ParsedProxy, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ParsedProxy{}, fmt.Errorf("proxy url is required")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ParsedProxy{}, fmt.Errorf("invalid proxy url: %w", err)
-	}
-	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
-	if scheme == "" {
-		return ParsedProxy{}, fmt.Errorf("proxy url scheme is required")
-	}
-	switch scheme {
-	case "socks5", "socks5h", "http", "https":
-	default:
-		return ParsedProxy{}, fmt.Errorf("unsupported proxy url scheme %q", scheme)
-	}
-	host := strings.TrimSpace(u.Hostname())
-	if host == "" {
-		return ParsedProxy{}, fmt.Errorf("proxy url host is required")
-	}
-	port := strings.TrimSpace(u.Port())
-	if port == "" {
-		switch scheme {
-		case "http":
-			port = "80"
-		case "https":
-			port = "443"
-		default:
-			port = "1080"
-		}
-	}
-	username := ""
-	password := ""
-	if u.User != nil {
-		username = strings.TrimSpace(u.User.Username())
-		if p, ok := u.User.Password(); ok {
-			password = p
-		}
-	}
-	if strings.TrimSpace(password) == "" {
-		// username-only form: the username carries the token, no identity.
-		password = username
-		username = ""
-	}
-	if strings.TrimSpace(password) == "" {
-		envName := strings.TrimSpace(tokenEnv)
-		if envName == "" {
-			envName = DefaultProxyTokenEnv
-		}
-		if getenv == nil {
-			getenv = os.Getenv
-		}
-		password = strings.TrimSpace(getenv(envName))
-	}
-	if password == "" {
-		return ParsedProxy{}, fmt.Errorf("proxy token missing: set password in url or env %s", strings.TrimSpace(tokenEnv))
-	}
-	return ParsedProxy{
-		Scheme:   scheme,
-		Host:     host,
-		Port:     port,
-		Username: username,
-		Password: password,
-		RawURL:   raw,
-	}, nil
-}
-
-// BuildTypedProxyURL builds the final proxy URL for one credential from a
-// per-type proxy entry. When the entry has a dotless sticky identity (e.g. a
-// Resin platform) and expand is true, account is appended as identity.account;
-// identities that already contain a dot are kept as-is for every credential.
-func BuildTypedProxyURL(proxy ParsedProxy, account string, expand bool) (string, error) {
-	if proxy.Password == "" {
-		return "", fmt.Errorf("proxy token missing")
-	}
-	var userinfo *url.Userinfo
-	switch {
-	case proxy.Username != "":
-		identity := proxy.Username
-		if expand && !strings.Contains(identity, ".") {
-			account = strings.TrimSpace(account)
-			if account == "" {
-				return "", fmt.Errorf("sticky identity %q requires an account", identity)
-			}
-			identity = identity + "." + account
-		}
-		userinfo = url.UserPassword(identity, proxy.Password)
-	default:
-		userinfo = url.User(proxy.Password)
-	}
-	out := &url.URL{
-		Scheme: proxy.Scheme,
-		User:   userinfo,
-		Host:   proxy.Host + ":" + proxy.Port,
-	}
-	return out.String(), nil
 }
 
 // BuildProxyURL builds the final sticky proxy URL for one credential.

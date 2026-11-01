@@ -114,14 +114,8 @@ func applyConfigMap(cfg *Config, m map[string]any) {
 	if v, ok := m["proxy_by_type"]; ok {
 		cfg.ProxyByType = StringMapFromAny(v)
 	}
-	if v, ok := m["sticky_by_type"]; ok {
-		cfg.StickyByType = StringMapFromAny(v)
-	}
 	if v, ok := m["other_proxy_url"]; ok {
 		cfg.OtherProxyURL = StringFromAny(v)
-	}
-	if v, ok := m["expand_sticky_account"]; ok {
-		cfg.ExpandStickyAccount = BoolFromAny(v, cfg.ExpandStickyAccount)
 	}
 	if v, ok := m["rebind_on_change"]; ok {
 		cfg.RebindOnChange = BoolFromAny(v, cfg.RebindOnChange)

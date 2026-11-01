@@ -170,7 +170,7 @@ func TestSyncOnceRebindsOnChange(t *testing.T) {
 	}
 	cfg := Defaults()
 	cfg.RebindOnChange = true // opt-in: rewrite existing bindings when target changes
-	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a:tok1@resin:2260"}
+	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a.{account}:tok1@resin:2260"}
 	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
 	wrote, skipped, unchanged, failed, err := b.SyncOnce()
 	if err != nil {
@@ -184,7 +184,7 @@ func TestSyncOnceRebindsOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	proxy, _ := meta["proxy_url"].(string)
-	// account derived from auth_id (id1), expanded after the sticky platform
+	// {account} expanded with the account derived from auth_id (id1)
 	if proxy != "socks5h://pool-a.id1:tok1@resin:2260" {
 		t.Fatalf("proxy = %q", proxy)
 	}
@@ -202,7 +202,7 @@ func TestSyncOnceRebindSkipsWhenDisabled(t *testing.T) {
 	}
 	cfg := Defaults()
 	cfg.RebindOnChange = false
-	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a:tok1@resin:2260"}
+	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a.{account}:tok1@resin:2260"}
 	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
 	wrote, skipped, _, failed, err := b.SyncOnce()
 	if err != nil {
@@ -224,7 +224,7 @@ func TestSyncOnceOtherFallbackForUnknownType(t *testing.T) {
 		names: map[string]string{"idx6": "gemini-a.json"},
 	}
 	cfg := Defaults()
-	cfg.OtherProxyURL = "socks5h://pool-b:tok2@resin:2260"
+	cfg.OtherProxyURL = "socks5h://pool-b.{account}:tok2@resin:2260"
 	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
 	wrote, _, _, failed, err := b.SyncOnce()
 	if err != nil {
@@ -243,7 +243,7 @@ func TestSyncOnceOtherFallbackForUnknownType(t *testing.T) {
 	}
 }
 
-func TestSyncOnceTypedNonStickyKeepsUsername(t *testing.T) {
+func TestSyncOnceVerbatimEntrySharedByType(t *testing.T) {
 	host := &mockHost{
 		entries: []HostAuthEntry{{
 			ID: "id2", AuthIndex: "idx7", Name: "claude-a.json", Provider: "claude", Email: "c@example.com",
@@ -254,8 +254,8 @@ func TestSyncOnceTypedNonStickyKeepsUsername(t *testing.T) {
 		names: map[string]string{"idx7": "claude-a.json"},
 	}
 	cfg := Defaults()
+	// no {account} placeholder: the entry is used verbatim, shared by the type
 	cfg.ProxyByType = map[string]string{"claude": "http://alice:s3cret@proxy.example:8080"}
-	cfg.StickyByType = map[string]string{"claude": "false"}
 	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
 	wrote, _, _, failed, err := b.SyncOnce()
 	if err != nil {

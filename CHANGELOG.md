@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- 粘性判定改为 `{account}` 占位符约定: 代理地址中包含 `{account}` 即为账号级粘性（按 Account 策略逐凭证替换）; 不包含则整类凭证共用、原样直连——Resin 与普通供应商代理可按类型自由混用
+- 移除 `sticky_by_type` / `expand_sticky_account`（被占位符约定取代）与 `proxy_token`（令牌直接内联在各行 URL 中）
+- 管理页"运行状态"改为可编辑"基本设置"面板: 总开关 / Account 策略（下拉）/ 同步间隔 / 改代理自动跟随均可直接修改; 全局代理入口字段移除, "other" 行即全局兜底
+- `rebind_on_change`（默认关闭）: 开启后改动代理会自动重写该类型已绑定凭证; 关闭时保持 v0.1 行为（只写空 `proxy_url`）
+- 弃用旧链路（`resin_proxy_url` + 平台解析）: 仅在 `other_proxy_url` 为空时兜底, 仅为兼容 v0.1 配置保留
+- 页面保存走 CPA 管理 API `PATCH /v0/management/plugins/:id/config`（复用管理面板密钥, 服务端渲染恒脱敏）
+
 ## 0.2.0
 
 - 按凭证类型的代理配置: 新增 `proxy_by_type`（每类型完整代理 URL）、`other_proxy_url`（未匹配类型兜底）

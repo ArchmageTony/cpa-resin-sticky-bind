@@ -1,6 +1,7 @@
 package stickybind
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -20,6 +21,50 @@ func (c Config) ResolveProxyInput(provider string) string {
 // (case-insensitive), without other_proxy_url fallback. Used for display.
 func (c Config) TypeProxyURL(provider string) string {
 	return lookupTypeValue(c.ProxyByType, provider)
+}
+
+// ProxyAccountPlaceholder marks an account-bound (sticky) proxy entry: every
+// occurrence is replaced with the per-credential account derived from the
+// configured account strategy. Entries without the placeholder are used
+// verbatim and shared by every credential of that type.
+const ProxyAccountPlaceholder = "{account}"
+
+// NormalizeProxyEntry validates one proxy_by_type / other_proxy_url entry and
+// reports whether it is account-bound (sticky). The only semantic is: an
+// entry containing {account} is a per-credential template, anything else is
+// used verbatim. Validation keeps our own sanity rules: parseable URL,
+// known scheme, host required. Validation runs against a placeholder-free
+// copy so curly braces never confuse the URL parser; the returned entry
+// preserves the original text.
+func NormalizeProxyEntry(raw string) (entry string, accountBound bool, err error) {
+	entry = strings.TrimSpace(raw)
+	if entry == "" {
+		return "", false, fmt.Errorf("proxy url is required")
+	}
+	accountBound = strings.Contains(entry, ProxyAccountPlaceholder)
+	probe := strings.ReplaceAll(entry, ProxyAccountPlaceholder, "account")
+	parsed, errParse := url.Parse(probe)
+	if errParse != nil || parsed.Scheme == "" {
+		return "", false, fmt.Errorf("proxy url format is invalid")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "socks5", "socks5h", "http", "https":
+	default:
+		return "", false, fmt.Errorf("proxy url scheme must be socks5, socks5h, http, or https")
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return "", false, fmt.Errorf("proxy url host is required")
+	}
+	return entry, accountBound, nil
+}
+
+// RenderProxyEntry substitutes every {account} placeholder in an
+// account-bound entry. Entries without the placeholder are returned as-is.
+func RenderProxyEntry(normalized string, account string) string {
+	if !strings.Contains(normalized, ProxyAccountPlaceholder) {
+		return normalized
+	}
+	return strings.ReplaceAll(normalized, ProxyAccountPlaceholder, strings.TrimSpace(account))
 }
 
 // lookupTypeValue does a case-insensitive map lookup for trimmed provider.
@@ -45,13 +90,17 @@ func lookupTypeValue(m map[string]string, provider string) string {
 
 // RedactTypedProxyURL masks the token of a per-type proxy entry for page and
 // log rendering. Username:token forms keep the identity and mask the token;
-// username-only token forms mask the whole userinfo.
+// username-only token forms mask the whole userinfo. Account-bound entries
+// carry the {account} placeholder, which is not URL-safe: it is temporarily
+// percent-encoded so the URL parser accepts it, and Username() decodes it
+// back, so the rendered mask keeps the placeholder visible.
 func RedactTypedProxyURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	u, err := url.Parse(raw)
+	probe := strings.ReplaceAll(raw, ProxyAccountPlaceholder, "%7Baccount%7D")
+	u, err := url.Parse(probe)
 	if err != nil || u.User == nil {
 		return raw
 	}

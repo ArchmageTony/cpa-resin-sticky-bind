@@ -12,8 +12,8 @@ func configDefaults() stickybind.Config {
 func configFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
 		{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable sticky Resin proxy binding"},
-		{Name: "resin_proxy_url", Type: pluginapi.ConfigFieldTypeString, Description: "Full Resin proxy URL, e.g. socks5h://resin:2260"},
-		{Name: "proxy_token_env", Type: pluginapi.ConfigFieldTypeString, Description: "Env var name for RESIN_PROXY_TOKEN when URL has no password"},
+		{Name: "resin_proxy_url", Type: pluginapi.ConfigFieldTypeString, Description: "Deprecated legacy fallback proxy URL, only used when other_proxy_url is empty"},
+		{Name: "proxy_token_env", Type: pluginapi.ConfigFieldTypeString, Description: "Deprecated env var fallback for the legacy chain token"},
 		{Name: "default_platform", Type: pluginapi.ConfigFieldTypeString, Description: "Default Resin Platform"},
 		{Name: "platform_by_provider", Type: pluginapi.ConfigFieldTypeObject, Description: "Optional Platform override map keyed by provider"},
 		{Name: "platform_by_auth_id", Type: pluginapi.ConfigFieldTypeObject, Description: "Optional Platform override map keyed by auth id"},

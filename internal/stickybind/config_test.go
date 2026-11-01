@@ -63,11 +63,15 @@ func TestParseResinProxyURLTokenAsUsername(t *testing.T) {
 
 func TestParseConfigFromYAML(t *testing.T) {
 	req, _ := json.Marshal(map[string]any{
-		"config_yaml": "enabled: true\nresin_proxy_url: socks5h://resin:2260\ndefault_platform: pool-a\nonly_if_empty: true\n",
+		"config_yaml": "enabled: true\nresin_proxy_url: socks5h://resin:2260\ndefault_platform: pool-a\nonly_if_empty: true\nsticky_by_type:\n  codex: true\n",
 	})
 	cfg := ParseConfigFromRequest(req)
 	if cfg.DefaultPlatform != "pool-a" || cfg.ResinProxyURL != "socks5h://resin:2260" {
 		t.Fatalf("cfg = %#v", cfg)
+	}
+	// removed fields from earlier iterations must be ignored, not break parsing
+	if _, ok := cfg.ProxyByType["codex"]; ok {
+		t.Fatalf("unexpected proxy_by_type entry")
 	}
 }
 

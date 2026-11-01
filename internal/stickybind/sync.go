@@ -71,9 +71,9 @@ type Binder struct {
 	Host   HostAPI
 	Getenv func(string) string
 
-	// typedCache caches ParseTypedProxyURL results per raw entry for one
+	// typedCache caches NormalizeProxyEntry results per raw entry for one
 	// sync pass. Single-goroutine use only (runtime loop / manual sync).
-	typedCache map[string]ParsedProxy
+	typedCache map[string]typedEntry
 }
 
 // SyncOnce enumerates credentials and binds empty proxy_url fields.
@@ -86,7 +86,7 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 		b.Host.Log("info", "sticky-bind disabled; skip sync")
 		return 0, 0, 0, 0, nil
 	}
-	b.typedCache = map[string]ParsedProxy{}
+	b.typedCache = map[string]typedEntry{}
 	// Legacy resin_proxy_url is optional once proxy_by_type is configured:
 	// a missing token here only disables the fallback path, not the sync.
 	legacyProxy, legacyErr := ParseResinProxyURL(cfg.ResinProxyURL, cfg.ProxyTokenEnv, b.Getenv)
@@ -250,25 +250,33 @@ func (b *Binder) decide(cfg Config, legacyProxy ParsedProxy, legacyErr error, en
 	}, nil
 }
 
+// typedEntry is one normalized proxy_by_type / other_proxy_url entry.
+type typedEntry struct {
+	normalized   string
+	accountBound bool // entry contains the {account} placeholder (sticky)
+}
+
 // buildTargetProxy resolves the proxy URL for one credential:
 // proxy_by_type[type] first, then other_proxy_url, then the legacy
-// resin_proxy_url + platform chain. platform/account are display values.
+// resin_proxy_url + platform chain. Entries containing {account} are
+// account-bound: the placeholder is replaced with the per-credential
+// account; entries without it are used verbatim and shared by the type.
+// platform/account are display values.
 func (b *Binder) buildTargetProxy(cfg Config, legacyProxy ParsedProxy, legacyErr error, provider string, accountIn AccountInput) (proxyURL, platform, account string, err error) {
 	if input := cfg.ResolveProxyInput(provider); input != "" {
-		parsed, errParse := b.parseTypedCached(cfg, input)
-		if errParse != nil {
-			return "", "", "", errParse
+		entry, errNorm := b.normalizeTypedCached(input)
+		if errNorm != nil {
+			return "", "", "", errNorm
 		}
-		sticky := cfg.StickyForType(provider)
-		identity := parsed.Username
-		if sticky && identity != "" && !strings.Contains(identity, ".") {
+		proxyURL = entry.normalized
+		if entry.accountBound {
 			account = BuildAccount(cfg, accountIn)
+			if strings.TrimSpace(account) == "" {
+				return "", "", "", fmt.Errorf("account is empty")
+			}
+			proxyURL = RenderProxyEntry(entry.normalized, account)
 		}
-		proxyURL, errBuild := BuildTypedProxyURL(parsed, account, sticky)
-		if errBuild != nil {
-			return "", "", "", errBuild
-		}
-		platform, account = splitIdentityDisplay(identity, account)
+		platform, account = identityDisplay(proxyURL)
 		return proxyURL, platform, account, nil
 	}
 	if legacyErr != nil {
@@ -287,31 +295,30 @@ func (b *Binder) buildTargetProxy(cfg Config, legacyProxy ParsedProxy, legacyErr
 	return proxyURL, platform, account, nil
 }
 
-// splitIdentityDisplay maps the final sticky identity to display fields.
-func splitIdentityDisplay(identity, account string) (platform, accountOut string) {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		return "", strings.TrimSpace(account)
+// identityDisplay maps a rendered proxy URL to Platform/Account display
+// fields when the username follows the Platform.Account shape.
+func identityDisplay(proxyURL string) (platform, account string) {
+	platform, account, ok := ExtractAccountFromProxyURL(proxyURL)
+	if !ok {
+		return "", ""
 	}
-	if i := strings.IndexByte(identity, '.'); i >= 0 {
-		return identity[:i], identity[i+1:]
-	}
-	return identity, strings.TrimSpace(account)
+	return platform, account
 }
 
-func (b *Binder) parseTypedCached(cfg Config, raw string) (ParsedProxy, error) {
+func (b *Binder) normalizeTypedCached(raw string) (typedEntry, error) {
 	if cached, ok := b.typedCache[raw]; ok {
 		return cached, nil
 	}
-	parsed, err := ParseTypedProxyURL(raw, cfg.ProxyTokenEnv, b.Getenv)
+	normalized, accountBound, err := NormalizeProxyEntry(raw)
 	if err != nil {
-		return ParsedProxy{}, err
+		return typedEntry{}, err
 	}
+	entry := typedEntry{normalized: normalized, accountBound: accountBound}
 	if b.typedCache == nil {
-		b.typedCache = map[string]ParsedProxy{}
+		b.typedCache = map[string]typedEntry{}
 	}
-	b.typedCache[raw] = parsed
-	return parsed, nil
+	b.typedCache[raw] = entry
+	return entry, nil
 }
 
 func parseAuthJSON(raw json.RawMessage) (map[string]any, string, error) {
