@@ -66,7 +66,7 @@ import (
 
 const (
 	pluginID   = "cpa-resin-sticky-bind"
-	pluginVer  = "0.2.1"
+	pluginVer  = "0.2.2"
 	pluginAuth = "ArchmageTony"
 	pluginRepo = "https://github.com/ArchmageTony/cpa-resin-sticky-bind"
 	pluginLogo = ""

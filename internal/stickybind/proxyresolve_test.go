@@ -2,6 +2,7 @@ package stickybind
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -128,6 +129,23 @@ func TestRenderProxyEntrySubstitutesAll(t *testing.T) {
 	// verbatim entries pass through untouched
 	if got := RenderProxyEntry("http://alice:s3cret@proxy.example:8080", "acc1"); got != "http://alice:s3cret@proxy.example:8080" {
 		t.Fatalf("verbatim entry changed: %q", got)
+	}
+}
+
+func TestRenderProxyEntryEscapesNonASCIIAccount(t *testing.T) {
+	// auth ids may fall back to non-ASCII file names; the rendered URL must
+	// stay parseable and the username must decode back to the account.
+	entry := "socks5h://pool-a.{account}:tok@resin:2260"
+	rendered := RenderProxyEntry(entry, "nv重授权-linden.boomer4u_y5_icloud.com.json")
+	u, err := url.Parse(rendered)
+	if err != nil {
+		t.Fatalf("rendered URL with non-ASCII account must parse: %v (%q)", err, rendered)
+	}
+	if got := u.User.Username(); got != "pool-a.nv重授权-linden.boomer4u_y5_icloud.com.json" {
+		t.Fatalf("decoded username = %q", got)
+	}
+	if strings.Contains(rendered, "重授权") {
+		t.Fatalf("non-ASCII must be percent-encoded in the stored URL: %q", rendered)
 	}
 }
 

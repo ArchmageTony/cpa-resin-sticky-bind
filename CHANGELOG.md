@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- 修复: `{account}` 替换未做 URL 转义, 非 ASCII 账号（auth_id 回退到中文文件名）写入的 `proxy_url` 含裸中文 userinfo, `url.Parse` 判为非法, 导致 Lamplighter 等消费方报 "proxy_url 无效"。现按 userinfo 规则（与 `url.UserPassword` 一致）对替换值百分号转义, 代理拨号方解码后行为与 0.1.x 相同; 已损坏的绑定在 `rebind_on_change` 开启时自动自愈
+
 ## 0.2.1
 
 - 粘性判定改为 `{account}` 占位符约定: 代理地址中包含 `{account}` 即为账号级粘性（按 Account 策略逐凭证替换）; 不包含则整类凭证共用、原样直连——Resin 与普通供应商代理可按类型自由混用

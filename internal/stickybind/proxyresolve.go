@@ -59,12 +59,17 @@ func NormalizeProxyEntry(raw string) (entry string, accountBound bool, err error
 }
 
 // RenderProxyEntry substitutes every {account} placeholder in an
-// account-bound entry. Entries without the placeholder are returned as-is.
+// account-bound entry. The account is percent-encoded with userinfo rules
+// first (same as url.UserPassword) so non-ASCII accounts — auth ids may fall
+// back to non-ASCII file names — keep the final proxy URL parseable; proxy
+// dialers decode the username again before sending it upstream. Entries
+// without the placeholder are returned as-is.
 func RenderProxyEntry(normalized string, account string) string {
 	if !strings.Contains(normalized, ProxyAccountPlaceholder) {
 		return normalized
 	}
-	return strings.ReplaceAll(normalized, ProxyAccountPlaceholder, strings.TrimSpace(account))
+	escaped := url.User(strings.TrimSpace(account)).String()
+	return strings.ReplaceAll(normalized, ProxyAccountPlaceholder, escaped)
 }
 
 // lookupTypeValue does a case-insensitive map lookup for trimmed provider.
