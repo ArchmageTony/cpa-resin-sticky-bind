@@ -74,6 +74,13 @@ type Binder struct {
 	// typedCache caches NormalizeProxyEntry results per raw entry for one
 	// sync pass. Single-goroutine use only (runtime loop / manual sync).
 	typedCache map[string]typedEntry
+
+	// lastWritten remembers the last proxy URL the binder wrote per auth
+	// index (across sync passes of this Binder). If a fresh pass computes
+	// the same target while the stored value still differs, something
+	// external keeps reverting the file; rewriting forever would only churn
+	// the watcher, so the binder backs off instead.
+	lastWritten map[string]string
 }
 
 // SyncOnce enumerates credentials and binds empty proxy_url fields.
@@ -86,6 +93,9 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 		b.Host.Log("info", "sticky-bind disabled; skip sync")
 		return 0, 0, 0, 0, nil
 	}
+	// One line per pass so the effective runtime configuration is visible in
+	// the field (page saves must show up here on the next pass).
+	b.Host.Log("info", fmt.Sprintf("sticky-bind config: strategy=%s rebind=%v typed_rows=%d other_set=%v", cfg.AccountStrategy, cfg.RebindOnChange, len(cfg.ProxyByType), cfg.OtherProxyURL != ""))
 	b.typedCache = map[string]typedEntry{}
 	// Legacy resin_proxy_url is optional once proxy_by_type is configured:
 	// a missing token here only disables the fallback path, not the sync.
@@ -119,6 +129,10 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 				b.Host.Log("error", fmt.Sprintf("save failed name=%s auth_index=%s err=%v", dec.Name, dec.AuthIndex, errSave))
 				continue
 			}
+			if b.lastWritten == nil {
+				b.lastWritten = map[string]string{}
+			}
+			b.lastWritten[dec.AuthIndex] = dec.ProxyURL
 			wrote++
 			b.Host.Log("info", fmt.Sprintf("bound name=%s auth_index=%s platform=%s account=%s proxy=%s", dec.Name, dec.AuthIndex, dec.Platform, dec.Account, dec.Redacted))
 		}
@@ -224,6 +238,24 @@ func (b *Binder) decide(cfg Config, legacyProxy ParsedProxy, legacyErr error, en
 			ProxyURL:  existingProxy,
 			Redacted:  RedactProxyURL(existingProxy),
 		}, nil
+	}
+	if existingProxy != "" && !sameProxyURL(existingProxy, proxyURL) {
+		// convergence guard: the identical target was written before and the
+		// stored value still differs, so an external writer keeps reverting
+		// the file. Back off instead of churning every sync cycle.
+		if last, ok := b.lastWritten[dec.AuthIndex]; ok && last == proxyURL {
+			return Decision{
+				Action:    ActionSkip,
+				Reason:    "write_backoff",
+				AuthIndex: dec.AuthIndex,
+				Name:      saveName,
+				Provider:  dec.Provider,
+				Platform:  platform,
+				Account:   account,
+				ProxyURL:  existingProxy,
+				Redacted:  RedactProxyURL(existingProxy),
+			}, nil
+		}
 	}
 
 	reason := "bind"
@@ -363,14 +395,17 @@ func sameProxyURL(a, b string) bool {
 	return normalizeProxyCompare(a) == normalizeProxyCompare(b)
 }
 
+// normalizeProxyCompare canonicalizes a proxy URL for equality checks. URLs
+// the parser rejects (e.g. raw non-ASCII in the userinfo, as written by
+// older plugin versions) are compared on their percent-encoded form, so a
+// stored raw form and its properly escaped target are recognised as equal
+// instead of triggering a rewrite every sync cycle.
 func normalizeProxyCompare(raw string) string {
 	raw = strings.TrimSpace(raw)
-	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
+	if u, err := url.Parse(raw); err == nil {
+		return u.String()
 	}
-	// compare full string with password included; equality is exact after trim
-	return u.String()
+	return escapeNonASCII(raw)
 }
 
 func parseLooseURL(raw string) (*url.URL, error) {

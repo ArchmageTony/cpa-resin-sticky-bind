@@ -219,25 +219,27 @@ func BuildProxyURL(proxy ParsedProxy, platform, account string) (string, error) 
 	return out.String(), nil
 }
 
-// RedactProxyURL masks password material in proxy URLs for logs.
+// RedactProxyURL masks password material in proxy URLs for logs. It never
+// returns credentials unmasked, even for URLs the parser rejects: the input
+// is first normalized onto a parseable copy, and any parse failure falls
+// back to a structural mask.
 func RedactProxyURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
-		return raw
+	if u, err := url.Parse(escapeNonASCII(raw)); err == nil && u.User != nil {
+		name := u.User.Username()
+		if _, ok := u.User.Password(); ok {
+			// Avoid url.UserPassword encoding of "***" as %2A%2A%2A.
+			return u.Scheme + "://" + name + ":***@" + u.Host
+		}
+		if name != "" {
+			return u.Scheme + "://" + name + "@" + u.Host
+		}
+		return u.Scheme + "://" + u.Host
 	}
-	name := u.User.Username()
-	if _, ok := u.User.Password(); ok {
-		// Avoid url.UserPassword encoding of "***" as %2A%2A%2A.
-		return u.Scheme + "://" + name + ":***@" + u.Host
-	}
-	if name != "" {
-		return u.Scheme + "://" + name + "@" + u.Host
-	}
-	return u.Scheme + "://" + u.Host
+	return maskUserinfoStructural(raw)
 }
 
 // BoolFromAny parses loose boolean values from config maps.

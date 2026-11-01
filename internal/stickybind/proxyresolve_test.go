@@ -167,3 +167,47 @@ func TestRedactTypedProxyURL(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactProxyURLMasksUnparseable(t *testing.T) {
+	// raw non-ASCII userinfo breaks url.Parse; the redaction must still mask
+	raw := "socks5h://gpt-proxy.nv重授权-x.json:SECRET@resin:2260"
+	got := RedactProxyURL(raw)
+	if strings.Contains(got, "SECRET") {
+		t.Fatalf("token leaked into log output: %q", got)
+	}
+	if !strings.Contains(got, "***") {
+		t.Fatalf("expected mask: %q", got)
+	}
+}
+
+func TestRedactTypedProxyURLStructuralFallback(t *testing.T) {
+	// control characters defeat both the parser and the probe
+	raw := "socks5h://bad\x00user:SECRET@resin:2260"
+	got := RedactTypedProxyURL(raw)
+	if strings.Contains(got, "SECRET") {
+		t.Fatalf("token leaked: %q", got)
+	}
+}
+
+func TestBuildAccountNonASCIIHashed(t *testing.T) {
+	cfg := Defaults()
+	a := BuildAccount(cfg, AccountInput{AuthID: "NV重授权-linden.boomer4u_y5@icloud.com.json"})
+	b := BuildAccount(cfg, AccountInput{AuthID: "NV重授权-linden.boomer4u_y5@icloud.com.json"})
+	if a != b {
+		t.Fatalf("account derivation must be deterministic: %q vs %q", a, b)
+	}
+	for _, r := range a {
+		if r > 0x7F {
+			t.Fatalf("account must be ASCII: %q", a)
+		}
+	}
+	other := BuildAccount(cfg, AccountInput{AuthID: "NV重授权-different@icloud.com.json"})
+	if other == a {
+		t.Fatalf("distinct inputs must not collapse to the same account: %q", a)
+	}
+	// plain ASCII inputs keep their exact form (no hash suffix)
+	plain := BuildAccount(cfg, AccountInput{AuthID: "plain-id"})
+	if plain != "plain-id" {
+		t.Fatalf("ASCII account changed: %q", plain)
+	}
+}

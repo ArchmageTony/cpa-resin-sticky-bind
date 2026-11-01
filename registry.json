@@ -6,7 +6,7 @@
       "name": "CPA Resin Sticky Bind",
       "description": "Bind each CPA credential to a stable Resin sticky proxy account via per-auth proxy_url, with per-credential-type proxy entries managed from the plugin page",
       "author": "ArchmageTony",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "repository": "https://github.com/ArchmageTony/cpa-resin-sticky-bind",
       "homepage": "https://github.com/ArchmageTony/cpa-resin-sticky-bind",
       "license": "MIT",

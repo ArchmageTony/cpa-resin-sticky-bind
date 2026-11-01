@@ -43,15 +43,20 @@ func ResolvePlatform(cfg Config, authID, provider string) string {
 }
 
 // BuildAccount generates a stable Resin account from credential identity.
+// The result is always ASCII: non-ASCII input collapses to underscores plus
+// a deterministic hash suffix so accounts stay unique and the rendered
+// proxy URL stays parseable.
 func BuildAccount(cfg Config, in AccountInput) string {
 	cfg = cfg.Normalize()
 	raw := pickAccountRaw(cfg.AccountStrategy, in)
-	base := sanitizeAccount(raw)
+	base, nonASCII := sanitizeAccount(raw)
 	if base == "" {
 		base = shortHash(raw)
+	} else if nonASCII {
+		base = base + "_" + shortHash(raw)
 	}
 	if cfg.AccountPrefix != "" {
-		prefix := sanitizeAccount(cfg.AccountPrefix)
+		prefix, _ := sanitizeAccount(cfg.AccountPrefix)
 		if prefix != "" {
 			if strings.HasSuffix(prefix, "_") || strings.HasSuffix(prefix, "-") || strings.HasSuffix(prefix, ".") {
 				base = prefix + base
@@ -85,10 +90,15 @@ func pickAccountRaw(strategy string, in AccountInput) string {
 	return "unknown"
 }
 
-func sanitizeAccount(raw string) string {
+// sanitizeAccount folds a raw identifier into the Resin account charset.
+// Only ASCII letters, digits and . _ - are kept: accounts must stay ASCII so
+// the rendered proxy URL is always parseable and comparisons are stable.
+// Non-ASCII input collapses like any other invalid character; the caller
+// appends a deterministic hash suffix to preserve uniqueness.
+func sanitizeAccount(raw string) (base string, nonASCII bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return ""
+		return "", false
 	}
 	// strip path if filename-like
 	raw = filepath.Base(raw)
@@ -97,6 +107,10 @@ func sanitizeAccount(raw string) string {
 	b.Grow(len(raw))
 	lastUnderscore := false
 	for _, r := range raw {
+		if r > 0x7F {
+			nonASCII = true
+			r = ' '
+		}
 		ok := unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-'
 		if ok {
 			b.WriteRune(r)
@@ -109,7 +123,7 @@ func sanitizeAccount(raw string) string {
 		}
 	}
 	out := strings.Trim(b.String(), "._-")
-	return out
+	return out, nonASCII
 }
 
 func fitAccount(base, raw string) string {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- 修复: 账号只产出 ASCII（非 ASCII 字符折叠 + 确定性 hash 后缀保唯一）——auth_id 回退到中文文件名时不再生成含裸中文 userinfo 的 `proxy_url`（Go `url.Parse` 判非法, Lamplighter 等消费方报 "proxy_url 无效"）
+- 修复: 无限重绑循环——比较逻辑容忍"裸非 ASCII 旧绑定 vs 转义后目标"（视为同一逻辑地址）; 新增收敛保护, 同一目标写过后仍未落盘则自动 backoff 跳过, 防止外部回写导致的每轮重写风暴
+- 修复: 日志令牌泄漏——`RedactProxyURL` / `RedactTypedProxyURL` 在 URL 无法解析时按结构掩码处理, 绝不回显原始凭据
+- 新增: 每轮同步输出配置摘要日志（strategy / rebind / 行数）, 便于现场核对页面保存的配置是否到达插件
+
 ## 0.2.2
 
 - 修复: `{account}` 替换未做 URL 转义, 非 ASCII 账号（auth_id 回退到中文文件名）写入的 `proxy_url` 含裸中文 userinfo, `url.Parse` 判为非法, 导致 Lamplighter 等消费方报 "proxy_url 无效"。现按 userinfo 规则（与 `url.UserPassword` 一致）对替换值百分号转义, 代理拨号方解码后行为与 0.1.x 相同; 已损坏的绑定在 `rebind_on_change` 开启时自动自愈

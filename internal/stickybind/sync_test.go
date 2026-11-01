@@ -3,6 +3,7 @@ package stickybind
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -136,6 +137,59 @@ func TestSyncOnceIdempotentSecondPass(t *testing.T) {
 	if unchanged != 1 && skipped != 1 {
 		// with overwrite true and same URL -> unchanged
 		t.Fatalf("expected unchanged/skip, got wrote=%d skipped=%d unchanged=%d", wrote, skipped, unchanged)
+	}
+}
+
+// noopSaveHost pretends writes succeed while the stored file never changes,
+// simulating an external writer that keeps reverting the value.
+type noopSaveHost struct{ mockHost }
+
+func (m *noopSaveHost) SaveAuth(name string, rawJSON json.RawMessage) error { return nil }
+
+func TestSyncOnceWriteBackoffWhenExternalWriterReverts(t *testing.T) {
+	host := &noopSaveHost{mockHost{
+		entries: []HostAuthEntry{{
+			ID: "id1", AuthIndex: "idx9", Name: "codex-c.json", Provider: "codex",
+		}},
+		files: map[string]json.RawMessage{
+			// stored value never changes even though SaveAuth "succeeds"
+			"idx9": json.RawMessage(`{"type":"codex","proxy_url":"socks5h://oldpool.old:tok@resin:2260"}`),
+		},
+		names: map[string]string{"idx9": "codex-c.json"},
+	}}
+	cfg := Defaults()
+	cfg.RebindOnChange = true
+	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a.{account}:tok1@resin:2260"}
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, _, _, failed, err := b.SyncOnce()
+	if err != nil || wrote != 1 || failed != 0 {
+		t.Fatalf("first pass wrote=%d failed=%d err=%v", wrote, failed, err)
+	}
+	wrote, skipped, _, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 0 || failed != 0 {
+		t.Fatalf("second pass must back off: wrote=%d failed=%d skipped=%d", wrote, failed, skipped)
+	}
+	found := false
+	for _, l := range host.logs {
+		if strings.Contains(l, "reason=write_backoff") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected write_backoff skip, logs=%v", host.logs)
+	}
+}
+
+func TestSameProxyCompareToleratesRawNonASCII(t *testing.T) {
+	// an old binding stored with raw non-ASCII and the properly escaped
+	// target describe the same logical URL and must not trigger a rewrite
+	raw := "socks5h://gpt-proxy.nv重授权-x.json:tok@resin:2260"
+	escaped := RenderProxyEntry("socks5h://gpt-proxy.{account}:tok@resin:2260", "nv重授权-x.json")
+	if !sameProxyURL(raw, escaped) {
+		t.Fatalf("raw form must compare equal to escaped form:\nraw=%q\nesc=%q", raw, escaped)
 	}
 }
 

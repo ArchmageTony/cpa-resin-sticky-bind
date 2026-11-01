@@ -29,6 +29,39 @@ func (c Config) TypeProxyURL(provider string) string {
 // verbatim and shared by every credential of that type.
 const ProxyAccountPlaceholder = "{account}"
 
+// escapeNonASCII percent-encodes every non-ASCII byte so URLs that Go's
+// parser rejects (e.g. raw UTF-8 in the userinfo) become parseable. The
+// encoding matches url.UserPassword's own escaping of non-ASCII.
+func escapeNonASCII(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c < 0x80 {
+			b.WriteByte(c)
+			continue
+		}
+		const hex = "0123456789ABCDEF"
+		b.WriteByte('%')
+		b.WriteByte(hex[c>>4])
+		b.WriteByte(hex[c&0xF])
+	}
+	return b.String()
+}
+
+// maskUserinfoStructural masks everything between "scheme://" and the last
+// "@" without relying on the URL parser.
+func maskUserinfoStructural(raw string) string {
+	i := strings.Index(raw, "://")
+	if i < 0 {
+		return "***"
+	}
+	if j := strings.LastIndex(raw, "@"); j > i+3 {
+		return raw[:i+3] + "***" + raw[j:]
+	}
+	return raw[:i+3] + "***"
+}
+
 // NormalizeProxyEntry validates one proxy_by_type / other_proxy_url entry and
 // reports whether it is account-bound (sticky). The only semantic is: an
 // entry containing {account} is a per-credential template, anything else is
@@ -98,23 +131,23 @@ func lookupTypeValue(m map[string]string, provider string) string {
 // username-only token forms mask the whole userinfo. Account-bound entries
 // carry the {account} placeholder, which is not URL-safe: it is temporarily
 // percent-encoded so the URL parser accepts it, and Username() decodes it
-// back, so the rendered mask keeps the placeholder visible.
+// back, so the rendered mask keeps the placeholder visible. Non-parseable
+// input falls back to a structural mask so tokens never reach logs raw.
 func RedactTypedProxyURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	probe := strings.ReplaceAll(raw, ProxyAccountPlaceholder, "%7Baccount%7D")
-	u, err := url.Parse(probe)
-	if err != nil || u.User == nil {
-		return raw
+	probe := strings.ReplaceAll(escapeNonASCII(raw), ProxyAccountPlaceholder, "%7Baccount%7D")
+	if u, err := url.Parse(probe); err == nil && u.User != nil {
+		name := u.User.Username()
+		if _, ok := u.User.Password(); ok {
+			return u.Scheme + "://" + name + ":***@" + u.Host
+		}
+		if name != "" {
+			return u.Scheme + "://***@" + u.Host
+		}
+		return u.Scheme + "://" + u.Host
 	}
-	name := u.User.Username()
-	if _, ok := u.User.Password(); ok {
-		return u.Scheme + "://" + name + ":***@" + u.Host
-	}
-	if name != "" {
-		return u.Scheme + "://***@" + u.Host
-	}
-	return u.Scheme + "://" + u.Host
+	return maskUserinfoStructural(raw)
 }
