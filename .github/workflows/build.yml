@@ -21,9 +21,9 @@ jobs:
       - name: Fetch CLIProxyAPI SDK source
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI ./CLIProxyAPI-src
+          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI ./tmp/CLIProxyAPI-src
           if ! grep -q 'replace github.com/router-for-me/CLIProxyAPI/v7' go.mod; then
-            printf '\nreplace github.com/router-for-me/CLIProxyAPI/v7 => ./CLIProxyAPI-src\n' >> go.mod
+            printf '\nreplace github.com/router-for-me/CLIProxyAPI/v7 => ./tmp/CLIProxyAPI-src\n' >> go.mod
           fi
           go mod download || true
       - name: Test
@@ -90,9 +90,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI ./CLIProxyAPI-src
+          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI ./tmp/CLIProxyAPI-src
           if ! grep -q 'replace github.com/router-for-me/CLIProxyAPI/v7' go.mod; then
-            printf '\nreplace github.com/router-for-me/CLIProxyAPI/v7 => ./CLIProxyAPI-src\n' >> go.mod
+            printf '\nreplace github.com/router-for-me/CLIProxyAPI/v7 => ./tmp/CLIProxyAPI-src\n' >> go.mod
           fi
           go mod download 2>&1 | tee download.log || true
       - name: Build c-shared (CPA plugin-store layout)
