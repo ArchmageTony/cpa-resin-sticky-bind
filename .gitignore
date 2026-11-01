@@ -7,9 +7,10 @@ dist/
 *.h
 *.a
 
-# local SDK checkout used by CI/dev
+# local SDK checkout used by CI/dev (cloned into repo tmp/)
 CLIProxyAPI-src/
 CLIProxyAPI-src
+tmp/
 
 # go
 vendor/

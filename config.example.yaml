@@ -6,9 +6,10 @@ plugins:
   configs:
     cpa-resin-sticky-bind:
       enabled: true
-      # Full Resin proxy entry. For app_net internal DNS:
+      # Legacy global Resin entry; used when a credential type has no
+      # proxy_by_type / other_proxy_url match.
       resin_proxy_url: "socks5h://resin:2260"
-      # Token is read from this env var when URL has no password.
+      # Token is read from this env var when a proxy URL has no password.
       # Inject RESIN_PROXY_TOKEN into the CPA container; do not commit real tokens.
       proxy_token_env: "RESIN_PROXY_TOKEN"
       default_platform: "default"
@@ -21,3 +22,20 @@ plugins:
       overwrite_existing: false
       include_providers: []
       exclude_providers: []
+      # Per-credential-type proxy entries (the management page writes here).
+      # Resin sticky form: username is the Platform, the per-credential
+      # account is appended automatically. Plain proxies: disable the
+      # sticky flag for that row.
+      # proxy_by_type:
+      #   codex: "socks5h://<platform-a>:<token>@resin:2260"
+      #   antigravity: "http://<user>:<pass>@<proxy-host>:<port>"
+      # sticky_by_type:
+      #   codex: true
+      #   antigravity: false
+      #   other: true
+      # Fallback proxy for credential types without a dedicated entry.
+      # other_proxy_url: "socks5h://<platform-b>:<token>@resin:2260"
+      expand_sticky_account: true
+      # Off by default: existing bindings stay untouched. Enable to let
+      # changed proxy entries rewrite bound credentials automatically.
+      rebind_on_change: false

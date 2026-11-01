@@ -94,7 +94,9 @@ func TestSyncOnceSkipsExistingProxy(t *testing.T) {
 		},
 		names: map[string]string{"idx2": "xai-b.json"},
 	}
-	b := &Binder{Cfg: Defaults(), Host: host, Getenv: func(string) string { return "tok" }}
+	cfg := Defaults()
+	cfg.RebindOnChange = false // v0.1 behaviour: never touch existing bindings
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
 	wrote, skipped, _, failed, err := b.SyncOnce()
 	if err != nil {
 		t.Fatal(err)
@@ -153,5 +155,182 @@ func TestSyncOnceSkipsRuntimeOnlyAndDisabled(t *testing.T) {
 	}
 	if wrote != 0 || skipped != 2 || failed != 0 {
 		t.Fatalf("wrote=%d skipped=%d failed=%d", wrote, skipped, failed)
+	}
+}
+
+func TestSyncOnceRebindsOnChange(t *testing.T) {
+	host := &mockHost{
+		entries: []HostAuthEntry{{
+			ID: "id1", AuthIndex: "idx4", Name: "codex-a.json", Provider: "codex", Email: "a@example.com",
+		}},
+		files: map[string]json.RawMessage{
+			"idx4": json.RawMessage(`{"type":"codex","email":"a@example.com","proxy_url":"socks5h://old-pool.oldacc:tok@resin:2260"}`),
+		},
+		names: map[string]string{"idx4": "codex-a.json"},
+	}
+	cfg := Defaults()
+	cfg.RebindOnChange = true // opt-in: rewrite existing bindings when target changes
+	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a:tok1@resin:2260"}
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, skipped, unchanged, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 1 || skipped != 0 || unchanged != 0 || failed != 0 {
+		t.Fatalf("rebind stats wrote=%d skipped=%d unchanged=%d failed=%d", wrote, skipped, unchanged, failed)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(host.saved["codex-a.json"], &meta); err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := meta["proxy_url"].(string)
+	// account derived from auth_id (id1), expanded after the sticky platform
+	if proxy != "socks5h://pool-a.id1:tok1@resin:2260" {
+		t.Fatalf("proxy = %q", proxy)
+	}
+}
+
+func TestSyncOnceRebindSkipsWhenDisabled(t *testing.T) {
+	host := &mockHost{
+		entries: []HostAuthEntry{{
+			ID: "id1", AuthIndex: "idx5", Name: "codex-b.json", Provider: "codex",
+		}},
+		files: map[string]json.RawMessage{
+			"idx5": json.RawMessage(`{"type":"codex","proxy_url":"socks5h://old-pool.oldacc:tok@resin:2260"}`),
+		},
+		names: map[string]string{"idx5": "codex-b.json"},
+	}
+	cfg := Defaults()
+	cfg.RebindOnChange = false
+	cfg.ProxyByType = map[string]string{"codex": "socks5h://pool-a:tok1@resin:2260"}
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, skipped, _, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 0 || skipped != 1 || failed != 0 {
+		t.Fatalf("wrote=%d skipped=%d failed=%d", wrote, skipped, failed)
+	}
+}
+
+func TestSyncOnceOtherFallbackForUnknownType(t *testing.T) {
+	host := &mockHost{
+		entries: []HostAuthEntry{{
+			ID: "id9", AuthIndex: "idx6", Name: "gemini-a.json", Provider: "gemini", Email: "g@example.com",
+		}},
+		files: map[string]json.RawMessage{
+			"idx6": json.RawMessage(`{"type":"gemini","email":"g@example.com"}`),
+		},
+		names: map[string]string{"idx6": "gemini-a.json"},
+	}
+	cfg := Defaults()
+	cfg.OtherProxyURL = "socks5h://pool-b:tok2@resin:2260"
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, _, _, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 1 || failed != 0 {
+		t.Fatalf("wrote=%d failed=%d", wrote, failed)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(host.saved["gemini-a.json"], &meta); err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := meta["proxy_url"].(string)
+	if proxy != "socks5h://pool-b.id9:tok2@resin:2260" {
+		t.Fatalf("proxy = %q", proxy)
+	}
+}
+
+func TestSyncOnceTypedNonStickyKeepsUsername(t *testing.T) {
+	host := &mockHost{
+		entries: []HostAuthEntry{{
+			ID: "id2", AuthIndex: "idx7", Name: "claude-a.json", Provider: "claude", Email: "c@example.com",
+		}},
+		files: map[string]json.RawMessage{
+			"idx7": json.RawMessage(`{"type":"claude","email":"c@example.com"}`),
+		},
+		names: map[string]string{"idx7": "claude-a.json"},
+	}
+	cfg := Defaults()
+	cfg.ProxyByType = map[string]string{"claude": "http://alice:s3cret@proxy.example:8080"}
+	cfg.StickyByType = map[string]string{"claude": "false"}
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, _, _, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 1 || failed != 0 {
+		t.Fatalf("wrote=%d failed=%d", wrote, failed)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(host.saved["claude-a.json"], &meta); err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := meta["proxy_url"].(string)
+	if proxy != "http://alice:s3cret@proxy.example:8080" {
+		t.Fatalf("plain proxy should be written verbatim: %q", proxy)
+	}
+}
+
+func TestSyncOnceDottedIdentitySharedAcrossType(t *testing.T) {
+	host := &mockHost{
+		entries: []HostAuthEntry{
+			{ID: "id1", AuthIndex: "i1", Name: "kimi-a.json", Provider: "kimi"},
+			{ID: "id2", AuthIndex: "i2", Name: "kimi-b.json", Provider: "kimi"},
+		},
+		files: map[string]json.RawMessage{
+			"i1": json.RawMessage(`{"type":"kimi"}`),
+			"i2": json.RawMessage(`{"type":"kimi"}`),
+		},
+		names: map[string]string{"i1": "kimi-a.json", "i2": "kimi-b.json"},
+	}
+	cfg := Defaults()
+	cfg.ProxyByType = map[string]string{"kimi": "socks5h://pool-x.fixedacc:tok@resin:2260"}
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, _, _, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 2 || failed != 0 {
+		t.Fatalf("wrote=%d failed=%d", wrote, failed)
+	}
+	want := "socks5h://pool-x.fixedacc:tok@resin:2260"
+	for name, raw := range host.saved {
+		var meta map[string]any
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			t.Fatal(err)
+		}
+		if proxy, _ := meta["proxy_url"].(string); proxy != want {
+			t.Fatalf("%s proxy = %q, want fixed identity %q", name, proxy, want)
+		}
+	}
+}
+
+func TestSyncOnceLegacyPathStillWorksWithoutTypedConfig(t *testing.T) {
+	host := &mockHost{
+		entries: []HostAuthEntry{{
+			ID: "id1", AuthIndex: "idx8", Name: "xai-d.json", Provider: "xai",
+		}},
+		files: map[string]json.RawMessage{"idx8": json.RawMessage(`{"type":"xai"}`)},
+		names: map[string]string{"idx8": "xai-d.json"},
+	}
+	cfg := Defaults()
+	b := &Binder{Cfg: cfg, Host: host, Getenv: func(string) string { return "tok" }}
+	wrote, _, _, failed, err := b.SyncOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote != 1 || failed != 0 {
+		t.Fatalf("wrote=%d failed=%d", wrote, failed)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(host.saved["xai-d.json"], &meta); err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := meta["proxy_url"].(string)
+	if !contains(proxy, "default.id1") {
+		t.Fatalf("legacy platform expansion broken: %q", proxy)
 	}
 }

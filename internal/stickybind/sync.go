@@ -70,6 +70,10 @@ type Binder struct {
 	Cfg    Config
 	Host   HostAPI
 	Getenv func(string) string
+
+	// typedCache caches ParseTypedProxyURL results per raw entry for one
+	// sync pass. Single-goroutine use only (runtime loop / manual sync).
+	typedCache map[string]ParsedProxy
 }
 
 // SyncOnce enumerates credentials and binds empty proxy_url fields.
@@ -82,9 +86,13 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 		b.Host.Log("info", "sticky-bind disabled; skip sync")
 		return 0, 0, 0, 0, nil
 	}
-	proxy, errProxy := ParseResinProxyURL(cfg.ResinProxyURL, cfg.ProxyTokenEnv, b.Getenv)
-	if errProxy != nil {
-		return 0, 0, 0, 0, errProxy
+	b.typedCache = map[string]ParsedProxy{}
+	// Legacy resin_proxy_url is optional once proxy_by_type is configured:
+	// a missing token here only disables the fallback path, not the sync.
+	legacyProxy, legacyErr := ParseResinProxyURL(cfg.ResinProxyURL, cfg.ProxyTokenEnv, b.Getenv)
+	if legacyErr != nil {
+		legacyProxy = ParsedProxy{}
+		b.Host.Log("info", "legacy resin_proxy_url unavailable: "+legacyErr.Error())
 	}
 
 	entries, errList := b.Host.ListAuths()
@@ -92,7 +100,7 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 		return 0, 0, 0, 0, errList
 	}
 	for _, entry := range entries {
-		dec, errDecide := b.decide(cfg, proxy, entry)
+		dec, errDecide := b.decide(cfg, legacyProxy, legacyErr, entry)
 		if errDecide != nil {
 			failed++
 			b.Host.Log("error", fmt.Sprintf("decide failed name=%s auth_index=%s err=%v", entry.Name, entry.AuthIndex, errDecide))
@@ -118,7 +126,7 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 	return wrote, skipped, unchanged, failed, nil
 }
 
-func (b *Binder) decide(cfg Config, proxy ParsedProxy, entry HostAuthEntry) (Decision, error) {
+func (b *Binder) decide(cfg Config, legacyProxy ParsedProxy, legacyErr error, entry HostAuthEntry) (Decision, error) {
 	dec := Decision{
 		AuthIndex: strings.TrimSpace(entry.AuthIndex),
 		Name:      strings.TrimSpace(entry.Name),
@@ -154,7 +162,9 @@ func (b *Binder) decide(cfg Config, proxy ParsedProxy, entry HostAuthEntry) (Dec
 	if errMeta != nil {
 		return Decision{}, errMeta
 	}
-	if existingProxy != "" && cfg.OnlyIfEmpty && !cfg.OverwriteExisting {
+	// v0.1 behaviour: leave existing bindings alone unless rebind is on or
+	// the operator explicitly allows overwriting.
+	if existingProxy != "" && !cfg.RebindOnChange && cfg.OnlyIfEmpty && !cfg.OverwriteExisting {
 		platform, account, _ := ExtractAccountFromProxyURL(existingProxy)
 		return Decision{
 			Action:    ActionSkip,
@@ -179,14 +189,13 @@ func (b *Binder) decide(cfg Config, proxy ParsedProxy, entry HostAuthEntry) (Dec
 		Filename: saveName,
 		Provider: dec.Provider,
 	}
-	platform := ResolvePlatform(cfg, authID, dec.Provider)
-	if platform == "" {
-		return Decision{Action: ActionSkip, Reason: "platform_empty", AuthIndex: dec.AuthIndex, Name: saveName, Provider: dec.Provider}, nil
-	}
-	account := BuildAccount(cfg, accountIn)
-	proxyURL, errBuild := BuildProxyURL(proxy, platform, account)
+
+	proxyURL, platform, account, errBuild := b.buildTargetProxy(cfg, legacyProxy, legacyErr, dec.Provider, accountIn)
 	if errBuild != nil {
 		return Decision{}, errBuild
+	}
+	if proxyURL == "" {
+		return Decision{Action: ActionSkip, Reason: "proxy_unavailable", AuthIndex: dec.AuthIndex, Name: saveName, Provider: dec.Provider}, nil
 	}
 	if existingProxy != "" && sameProxyURL(existingProxy, proxyURL) {
 		return Decision{
@@ -201,7 +210,26 @@ func (b *Binder) decide(cfg Config, proxy ParsedProxy, entry HostAuthEntry) (Dec
 			Redacted:  RedactProxyURL(existingProxy),
 		}, nil
 	}
+	if existingProxy != "" && !cfg.RebindOnChange && !cfg.OverwriteExisting {
+		// rebind disabled and no explicit overwrite permission
+		platform, account, _ := ExtractAccountFromProxyURL(existingProxy)
+		return Decision{
+			Action:    ActionSkip,
+			Reason:    "proxy_url_present",
+			AuthIndex: dec.AuthIndex,
+			Name:      saveName,
+			Provider:  dec.Provider,
+			Platform:  platform,
+			Account:   account,
+			ProxyURL:  existingProxy,
+			Redacted:  RedactProxyURL(existingProxy),
+		}, nil
+	}
 
+	reason := "bind"
+	if existingProxy != "" {
+		reason = "rebind"
+	}
 	meta["proxy_url"] = proxyURL
 	raw, errMarshal := json.Marshal(meta)
 	if errMarshal != nil {
@@ -209,7 +237,7 @@ func (b *Binder) decide(cfg Config, proxy ParsedProxy, entry HostAuthEntry) (Dec
 	}
 	return Decision{
 		Action:    ActionWrite,
-		Reason:    "bind",
+		Reason:    reason,
 		AuthIndex: dec.AuthIndex,
 		Name:      saveName,
 		Provider:  dec.Provider,
@@ -220,6 +248,70 @@ func (b *Binder) decide(cfg Config, proxy ParsedProxy, entry HostAuthEntry) (Dec
 		SaveJSON:  raw,
 		Redacted:  RedactProxyURL(proxyURL),
 	}, nil
+}
+
+// buildTargetProxy resolves the proxy URL for one credential:
+// proxy_by_type[type] first, then other_proxy_url, then the legacy
+// resin_proxy_url + platform chain. platform/account are display values.
+func (b *Binder) buildTargetProxy(cfg Config, legacyProxy ParsedProxy, legacyErr error, provider string, accountIn AccountInput) (proxyURL, platform, account string, err error) {
+	if input := cfg.ResolveProxyInput(provider); input != "" {
+		parsed, errParse := b.parseTypedCached(cfg, input)
+		if errParse != nil {
+			return "", "", "", errParse
+		}
+		sticky := cfg.StickyForType(provider)
+		identity := parsed.Username
+		if sticky && identity != "" && !strings.Contains(identity, ".") {
+			account = BuildAccount(cfg, accountIn)
+		}
+		proxyURL, errBuild := BuildTypedProxyURL(parsed, account, sticky)
+		if errBuild != nil {
+			return "", "", "", errBuild
+		}
+		platform, account = splitIdentityDisplay(identity, account)
+		return proxyURL, platform, account, nil
+	}
+	if legacyErr != nil {
+		// no usable proxy source for this credential; caller records a skip
+		return "", "", "", nil
+	}
+	platform = ResolvePlatform(cfg, accountIn.AuthID, provider)
+	if platform == "" {
+		return "", "", "", nil
+	}
+	account = BuildAccount(cfg, accountIn)
+	proxyURL, errBuild := BuildProxyURL(legacyProxy, platform, account)
+	if errBuild != nil {
+		return "", "", "", errBuild
+	}
+	return proxyURL, platform, account, nil
+}
+
+// splitIdentityDisplay maps the final sticky identity to display fields.
+func splitIdentityDisplay(identity, account string) (platform, accountOut string) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return "", strings.TrimSpace(account)
+	}
+	if i := strings.IndexByte(identity, '.'); i >= 0 {
+		return identity[:i], identity[i+1:]
+	}
+	return identity, strings.TrimSpace(account)
+}
+
+func (b *Binder) parseTypedCached(cfg Config, raw string) (ParsedProxy, error) {
+	if cached, ok := b.typedCache[raw]; ok {
+		return cached, nil
+	}
+	parsed, err := ParseTypedProxyURL(raw, cfg.ProxyTokenEnv, b.Getenv)
+	if err != nil {
+		return ParsedProxy{}, err
+	}
+	if b.typedCache == nil {
+		b.typedCache = map[string]ParsedProxy{}
+	}
+	b.typedCache[raw] = parsed
+	return parsed, nil
 }
 
 func parseAuthJSON(raw json.RawMessage) (map[string]any, string, error) {

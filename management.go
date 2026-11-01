@@ -3,12 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/ArchmageTony/cpa-resin-sticky-bind/internal/stickybind"
 )
@@ -92,12 +90,42 @@ func handleManagement(raw []byte) ([]byte, error) {
 		if err != nil {
 			syncNote = "sync error: " + err.Error()
 		} else {
-			syncNote = fmt.Sprintf("sync done wrote=%d skipped=%d unchanged=%d failed=%d", wrote, skipped, unchanged, failed)
+			syncNote = fmt.Sprintf("手动同步完成: 写入 %d / 跳过 %d / 未变化 %d / 失败 %d", wrote, skipped, unchanged, failed)
 		}
 	}
 
-	page := renderStatusPage(cfg, syncNote)
+	page := renderStatusPage(cfg, syncNote, collectProviderCounts())
 	return okEnvelope(htmlResponse(http.StatusOK, page))
+}
+
+// collectProviderCounts counts persisted credentials per provider type for
+// the management page. Errors yield an empty map: the page stays usable.
+func collectProviderCounts() map[string]int {
+	entries, err := (hostAdapter{}).ListAuths()
+	if err != nil {
+		return map[string]int{}
+	}
+	counts := map[string]int{}
+	for _, entry := range entries {
+		if entry.RuntimeOnly {
+			continue
+		}
+		provider := firstNonEmptyString(entry.Provider, entry.Type)
+		if strings.TrimSpace(provider) == "" {
+			continue
+		}
+		counts[strings.ToLower(strings.TrimSpace(provider))]++
+	}
+	return counts
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func isStatusResourcePath(path string) bool {
@@ -126,65 +154,4 @@ func htmlResponse(status int, body string) managementResponse {
 		Headers:    headers,
 		Body:       []byte(body),
 	}
-}
-
-func renderStatusPage(cfg stickybind.Config, syncNote string) string {
-	cfg = cfg.Normalize()
-	tokenStatus := "missing"
-	if _, err := stickybind.ParseResinProxyURL(cfg.ResinProxyURL, cfg.ProxyTokenEnv, os.Getenv); err == nil {
-		tokenStatus = "ok"
-	} else {
-		tokenStatus = "error: " + err.Error()
-	}
-	// never echo raw token/url password
-	safeURL := stickybind.RedactProxyURL(cfg.ResinProxyURL)
-	if safeURL == "" {
-		safeURL = cfg.ResinProxyURL
-	}
-	// if URL has only username token, redact whole userinfo
-	if u, err := url.Parse(cfg.ResinProxyURL); err == nil && u.User != nil {
-		if _, hasPass := u.User.Password(); !hasPass && u.User.Username() != "" {
-			safeURL = u.Scheme + "://***@" + u.Host
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Resin Sticky Bind</title>")
-	b.WriteString("<style>body{font-family:system-ui,sans-serif;margin:24px;max-width:900px}code,pre{background:#f4f4f5;padding:2px 6px;border-radius:4px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left}.ok{color:#067d3e}.bad{color:#b00020}.note{margin:12px 0;padding:10px;background:#eef6ff;border-radius:6px}</style>")
-	b.WriteString("</head><body>")
-	b.WriteString("<h1>Resin Sticky Bind</h1>")
-	b.WriteString("<p>Binds empty credential <code>proxy_url</code> values to stable Resin sticky accounts.</p>")
-	if syncNote != "" {
-		b.WriteString("<div class=\"note\">")
-		b.WriteString(html.EscapeString(syncNote))
-		b.WriteString("</div>")
-	}
-	b.WriteString("<p><a href=\"?action=sync\">Run sync now</a></p>")
-	b.WriteString("<h2>Status</h2><table>")
-	row(&b, "plugin", pluginID+" v"+pluginVer)
-	row(&b, "enabled", fmt.Sprintf("%v", cfg.Enabled))
-	row(&b, "resin_proxy_url", safeURL)
-	row(&b, "proxy_token_env", cfg.ProxyTokenEnv)
-	row(&b, "token_resolve", tokenStatus)
-	row(&b, "default_platform", cfg.DefaultPlatform)
-	row(&b, "account_strategy", cfg.AccountStrategy)
-	row(&b, "sync_interval_seconds", fmt.Sprintf("%d", cfg.SyncIntervalSeconds))
-	row(&b, "only_if_empty", fmt.Sprintf("%v", cfg.OnlyIfEmpty))
-	row(&b, "overwrite_existing", fmt.Sprintf("%v", cfg.OverwriteExisting))
-	row(&b, "time", time.Now().Format(time.RFC3339))
-	b.WriteString("</table>")
-	b.WriteString("<h2>Notes</h2><ul>")
-	b.WriteString("<li>No Management API URL is required; host.auth callbacks run in-process.</li>")
-	b.WriteString("<li>Token may come from env, URL password, or URL username-only form.</li>")
-	b.WriteString("<li>Existing non-empty proxy_url is skipped when only_if_empty=true.</li>")
-	b.WriteString("</ul></body></html>")
-	return b.String()
-}
-
-func row(b *strings.Builder, k, v string) {
-	b.WriteString("<tr><th>")
-	b.WriteString(html.EscapeString(k))
-	b.WriteString("</th><td>")
-	b.WriteString(html.EscapeString(v))
-	b.WriteString("</td></tr>")
 }

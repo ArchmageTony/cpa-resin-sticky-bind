@@ -24,6 +24,11 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "overwrite_existing", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Allow overwriting existing proxy_url"},
 		{Name: "include_providers", Type: pluginapi.ConfigFieldTypeArray, Description: "Only process these providers (empty = all)"},
 		{Name: "exclude_providers", Type: pluginapi.ConfigFieldTypeArray, Description: "Skip these providers"},
+		{Name: "proxy_by_type", Type: pluginapi.ConfigFieldTypeObject, Description: "Full proxy URL per credential type, Resin sticky form supported"},
+		{Name: "sticky_by_type", Type: pluginapi.ConfigFieldTypeObject, Description: "Per-type sticky expansion flag, key 'other' for the fallback row (default true)"},
+		{Name: "other_proxy_url", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback proxy URL for credential types without a dedicated entry"},
+		{Name: "expand_sticky_account", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Default sticky expansion for types not listed in sticky_by_type"},
+		{Name: "rebind_on_change", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite existing proxy_url when the resolved target changes"},
 	}
 }
 
