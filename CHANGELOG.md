@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- 修复: 热升级/重载后旧版本实例未停止, 新旧两个同步循环以不同配置互相覆写同一凭证的 `proxy_url`。新增单活实例租约: 每个实例启动时生成随机实例 ID 并记日志, 同步循环启动时写入租约文件 (`lease_file`, 默认 `plugins/data/cpa-resin-sticky-bind/instance.lease`, 相对 CPA 工作目录), 最新声明者为准; 发现租约被其他实例持有的旧实例记录 warn 并停止同步。租约文件不可读写时放行 (不影响同步)
+- 修复: `write_backoff` 不再永久生效——连续退让 10 轮后重试写入一次; 首次退让输出 warn, 包含凭证名与脱敏后的现值/目标值; 配置变化时清空写入历史与退让计数
+
 ## 0.2.3
 
 - 修复: 账号只产出 ASCII（非 ASCII 字符折叠 + 确定性 hash 后缀保唯一）——auth_id 回退到中文文件名时不再生成含裸中文 userinfo 的 `proxy_url`（Go `url.Parse` 判非法, Lamplighter 等消费方报 "proxy_url 无效"）

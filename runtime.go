@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -57,6 +58,8 @@ type runtime struct {
 	cfg    stickybind.Config
 	stopCh chan struct{}
 	doneCh chan struct{}
+	// id identifies this loaded plugin instance (one per .so load).
+	id string
 }
 
 var (
@@ -68,7 +71,9 @@ func getRuntime() *runtime {
 	rtOnce.Do(func() {
 		rtInst = &runtime{
 			cfg: configDefaults().Normalize(),
+			id:  stickybind.NewInstanceID(),
 		}
+		hostLog("info", fmt.Sprintf("sticky-bind instance started id=%s version=%s", rtInst.id, pluginVer))
 	})
 	return rtInst
 }
@@ -113,20 +118,34 @@ func (r *runtime) loop(cfg stickybind.Config, stop <-chan struct{}, done chan<- 
 		Host:   hostAdapter{},
 		Getenv: os.Getenv,
 	}
-	run := func() {
+	lease := stickybind.Lease{Path: cfg.LeaseFile, ID: r.id}
+	if err := lease.Claim(); err != nil {
+		hostLog("warn", fmt.Sprintf("sticky-bind lease claim failed id=%s path=%s err=%v (continuing without single-instance guard)", r.id, cfg.LeaseFile, err))
+	} else {
+		hostLog("info", fmt.Sprintf("sticky-bind lease claimed id=%s path=%s", r.id, cfg.LeaseFile))
+	}
+	// run returns false when this instance lost the lease and must stop.
+	run := func() bool {
+		if held, owner := lease.Held(); !held {
+			hostLog("warn", fmt.Sprintf("sticky-bind instance id=%s version=%s superseded by id=%s; stopping sync loop", r.id, pluginVer, owner))
+			return false
+		}
 		wrote, skipped, unchanged, failed, err := b.SyncOnce()
 		if err != nil {
 			hostLog("error", "sticky-bind sync error: "+err.Error())
-			return
+			return true
 		}
-		hostLog("info", fmt.Sprintf("sticky-bind sync wrote=%d skipped=%d unchanged=%d failed=%d", wrote, skipped, unchanged, failed))
+		hostLog("info", fmt.Sprintf("sticky-bind sync id=%s wrote=%d skipped=%d unchanged=%d failed=%d", r.id, wrote, skipped, unchanged, failed))
+		return true
 	}
 	// initial pass shortly after start
 	select {
 	case <-stop:
 		return
 	case <-time.After(2 * time.Second):
-		run()
+		if !run() {
+			return
+		}
 	}
 	ticker := time.NewTicker(time.Duration(cfg.SyncIntervalSeconds) * time.Second)
 	defer ticker.Stop()
@@ -140,8 +159,14 @@ func (r *runtime) loop(cfg stickybind.Config, stop <-chan struct{}, done chan<- 
 			if !latest.Enabled {
 				continue
 			}
+			if !reflect.DeepEqual(latest, b.Cfg) {
+				// new targets must not be mistaken for external reverts
+				b.ResetState()
+			}
 			b.Cfg = latest
-			run()
+			if !run() {
+				return
+			}
 		}
 	}
 }

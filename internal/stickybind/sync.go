@@ -37,24 +37,24 @@ type AuthGetResult struct {
 type Action string
 
 const (
-	ActionSkip     Action = "skip"
-	ActionWrite    Action = "write"
+	ActionSkip      Action = "skip"
+	ActionWrite     Action = "write"
 	ActionUnchanged Action = "unchanged"
 )
 
 // Decision is the result of evaluating one credential.
 type Decision struct {
-	Action     Action
-	Reason     string
-	AuthIndex  string
-	Name       string
-	Provider   string
-	Platform   string
-	Account    string
-	ProxyURL   string
-	SaveName   string
-	SaveJSON   json.RawMessage
-	Redacted   string
+	Action    Action
+	Reason    string
+	AuthIndex string
+	Name      string
+	Provider  string
+	Platform  string
+	Account   string
+	ProxyURL  string
+	SaveName  string
+	SaveJSON  json.RawMessage
+	Redacted  string
 }
 
 // HostAPI is the minimal host surface used by the binder.
@@ -81,6 +81,28 @@ type Binder struct {
 	// external keeps reverting the file; rewriting forever would only churn
 	// the watcher, so the binder backs off instead.
 	lastWritten map[string]string
+
+	// backoffSkips counts consecutive write_backoff skips per auth index.
+	// The backoff is bounded: after MaxBackoffSkips skipped passes the binder
+	// retries the write once, so a transient external writer (e.g. a stale
+	// plugin instance that has since stopped) cannot pin a wrong binding
+	// forever.
+	backoffSkips map[string]int
+}
+
+// MaxBackoffSkips bounds how many consecutive passes one credential stays in
+// write_backoff before the binder retries the write.
+const MaxBackoffSkips = 10
+
+// ResetState drops cross-pass memory (write history and backoff counters).
+// Call it whenever the effective configuration changes so a new target is
+// never mistaken for an external revert of an old one.
+func (b *Binder) ResetState() {
+	if b == nil {
+		return
+	}
+	b.lastWritten = nil
+	b.backoffSkips = nil
 }
 
 // SyncOnce enumerates credentials and binds empty proxy_url fields.
@@ -133,6 +155,7 @@ func (b *Binder) SyncOnce() (wrote, skipped, unchanged, failed int, err error) {
 				b.lastWritten = map[string]string{}
 			}
 			b.lastWritten[dec.AuthIndex] = dec.ProxyURL
+			delete(b.backoffSkips, dec.AuthIndex)
 			wrote++
 			b.Host.Log("info", fmt.Sprintf("bound name=%s auth_index=%s platform=%s account=%s proxy=%s", dec.Name, dec.AuthIndex, dec.Platform, dec.Account, dec.Redacted))
 		}
@@ -244,6 +267,20 @@ func (b *Binder) decide(cfg Config, legacyProxy ParsedProxy, legacyErr error, en
 		// stored value still differs, so an external writer keeps reverting
 		// the file. Back off instead of churning every sync cycle.
 		if last, ok := b.lastWritten[dec.AuthIndex]; ok && last == proxyURL {
+			if b.backoffSkips == nil {
+				b.backoffSkips = map[string]int{}
+			}
+			b.backoffSkips[dec.AuthIndex]++
+			n := b.backoffSkips[dec.AuthIndex]
+			if n > MaxBackoffSkips {
+				// bounded backoff: retry the write once, then start counting again
+				b.Host.Log("warn", fmt.Sprintf("write_backoff expired, retrying name=%s auth_index=%s observed=%s target=%s", saveName, dec.AuthIndex, RedactProxyURL(existingProxy), RedactProxyURL(proxyURL)))
+				delete(b.backoffSkips, dec.AuthIndex)
+				goto write
+			}
+			if n == 1 {
+				b.Host.Log("warn", fmt.Sprintf("external writer reverted binding; backing off name=%s auth_index=%s observed=%s target=%s retry_after_passes=%d", saveName, dec.AuthIndex, RedactProxyURL(existingProxy), RedactProxyURL(proxyURL), MaxBackoffSkips))
+			}
 			return Decision{
 				Action:    ActionSkip,
 				Reason:    "write_backoff",
@@ -258,6 +295,7 @@ func (b *Binder) decide(cfg Config, legacyProxy ParsedProxy, legacyErr error, en
 		}
 	}
 
+write:
 	reason := "bind"
 	if existingProxy != "" {
 		reason = "rebind"

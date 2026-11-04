@@ -9,16 +9,19 @@ import (
 )
 
 const (
-	DefaultProxyTokenEnv      = "RESIN_PROXY_TOKEN"
-	DefaultPlatform           = "default"
-	DefaultAccountStrategy    = "auth_id"
-	DefaultSyncIntervalSec    = 30
-	DefaultResinProxyURL      = "socks5h://resin:2260"
-	MaxAccountLen             = 64
-	AccountStrategyAuthID     = "auth_id"
-	AccountStrategyEmail      = "email"
-	AccountStrategySub        = "sub"
-	AccountStrategyFilename   = "filename"
+	DefaultProxyTokenEnv   = "RESIN_PROXY_TOKEN"
+	DefaultPlatform        = "default"
+	DefaultAccountStrategy = "auth_id"
+	DefaultSyncIntervalSec = 30
+	DefaultResinProxyURL   = "socks5h://resin:2260"
+	// DefaultLeaseFile is relative to the CPA working directory, next to the
+	// plugins/data dirs other plugins use for writable state.
+	DefaultLeaseFile        = "plugins/data/cpa-resin-sticky-bind/instance.lease"
+	MaxAccountLen           = 64
+	AccountStrategyAuthID   = "auth_id"
+	AccountStrategyEmail    = "email"
+	AccountStrategySub      = "sub"
+	AccountStrategyFilename = "filename"
 )
 
 // KnownProviders is the built-in list of credential types CPA supports.
@@ -59,6 +62,7 @@ type Config struct {
 	ProxyByType         map[string]string `json:"proxy_by_type" yaml:"proxy_by_type"`
 	OtherProxyURL       string            `json:"other_proxy_url" yaml:"other_proxy_url"`
 	RebindOnChange      bool              `json:"rebind_on_change" yaml:"rebind_on_change"`
+	LeaseFile           string            `json:"lease_file" yaml:"lease_file"`
 }
 
 // Defaults returns the first-release defaults.
@@ -80,6 +84,7 @@ func Defaults() Config {
 		ProxyByType:         map[string]string{},
 		OtherProxyURL:       "",
 		RebindOnChange:      false,
+		LeaseFile:           DefaultLeaseFile,
 	}
 }
 
@@ -97,6 +102,9 @@ func (c Config) Normalize() Config {
 	}
 	if strings.TrimSpace(out.AccountStrategy) == "" {
 		out.AccountStrategy = DefaultAccountStrategy
+	}
+	if strings.TrimSpace(out.LeaseFile) == "" {
+		out.LeaseFile = DefaultLeaseFile
 	}
 	if out.SyncIntervalSeconds <= 0 {
 		out.SyncIntervalSeconds = DefaultSyncIntervalSec

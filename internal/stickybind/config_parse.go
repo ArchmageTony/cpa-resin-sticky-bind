@@ -120,4 +120,7 @@ func applyConfigMap(cfg *Config, m map[string]any) {
 	if v, ok := m["rebind_on_change"]; ok {
 		cfg.RebindOnChange = BoolFromAny(v, cfg.RebindOnChange)
 	}
+	if v, ok := m["lease_file"]; ok {
+		cfg.LeaseFile = StringFromAny(v)
+	}
 }

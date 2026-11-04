@@ -29,6 +29,7 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "other_proxy_url", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback proxy URL for credential types without a dedicated entry"},
 		{Name: "expand_sticky_account", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Default sticky expansion for types not listed in sticky_by_type"},
 		{Name: "rebind_on_change", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite existing proxy_url when the resolved target changes"},
+		{Name: "lease_file", Type: pluginapi.ConfigFieldTypeString, Description: "Single-active-instance lease file (default plugins/data/cpa-resin-sticky-bind/instance.lease, relative to the CPA working dir)"},
 	}
 }
 

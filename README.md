@@ -5,7 +5,7 @@ CLIProxyAPI 原生插件: 为每份凭证绑定稳定的 Resin sticky 代理 Acc
 | 项 | 值 |
 |----|----|
 | 插件 ID | `cpa-resin-sticky-bind` |
-| 版本 | `0.2.1` |
+| 版本 | `0.2.4` |
 | 协议 | MIT |
 
 ## 行为
@@ -20,6 +20,8 @@ socks5h://<Platform>.<Account>:<token>@resin:2260
 3. 代理来源按优先级: `proxy_by_type[类型]` → `other_proxy_url`（全局兜底）→ 弃用的旧链路（仅为兼容 v0.1 配置保留）
 4. 默认 `rebind_on_change=false`: 已绑定凭证保持不动; 在页面勾选或配置开启后, 目标代理变化时自动重写 (Account 不变)
 5. 日志与页面中 token 始终脱敏
+6. 单活实例: 同步循环启动时写入租约文件 `lease_file` (默认 `plugins/data/cpa-resin-sticky-bind/instance.lease`), 热升级后旧实例发现租约易主即停止同步, 避免新旧实例互相覆写
+7. 外部回写保护 (`write_backoff`) 有上限: 连续退让 10 轮后重试一次, 并输出脱敏 warn
 
 ## 按凭证类型配置代理
 
